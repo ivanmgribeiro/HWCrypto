@@ -1,6 +1,6 @@
 TMP_DIRS = -bdir build_dir  -simdir build_dir  -info-dir build_dir
 
-INCLUDE_DIRS = :../libs/BlueStuff/AXI:../libs/BlueStuff/BlueBasics:../libs/BlueStuff:src_Test:src_HWCrypto:src_Boot_ROM:+
+INCLUDE_DIRS = :../libs/BlueStuff/AXI:../libs/BlueStuff/BlueBasics:../libs/BlueStuff:src_Test:src_HWCrypto:src_Boot_ROM:src_Mem_Model:+
 #	    -p $(INCLUDE_DIRS) \
 
 build_dir:

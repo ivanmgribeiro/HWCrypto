@@ -11,7 +11,9 @@ typedef enum {
     IDLE,
     FETCH_NEXT,
     WAIT_RRESP,
+    WRITE_BURST,
     WRITE_LAST,
+    WRITE_NEXT,
     ALIGN,
     STEADY,
     FINISH
@@ -41,6 +43,7 @@ interface HWCrypto_Data_Mover_IFC #( // bus interface
                                    );
     interface AXI4_Master #(`MPARAMS) axi_m;
     method Action request (Bit #(m_addr_) bus_addr, Bit #(bram_addr_sz_) bram_addr, HWCrypto_Dir dir, Bit #(64) len);
+    method Bool is_ready;
     method Action set_verbosity (Bit #(4) new_verb);
 endinterface
 /* *  Behaviour: *   +  This module will transfer data between the AXI Bus and a BRAM-like
@@ -73,12 +76,17 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_d
                                         , Add#(i__, 8, TMul#(bram_be_, 8))
                                         , Add#(m_data_, j__, TMul#(m_data_, 2))
                                         , Add#(d__, TMul#(bram_be_, 8), TMul#(m_data_, 2))
+                                        , Div#(m_data_, 8, bram_be_)
+                                        , Mul#(bram_be_, 8, m_data_)
                                         );
     Reg #(Bit #(m_addr_)) rg_bus_addr <- mkRegU;
     // normally, the bram address is a bram word address (ie it addresses which
     // bram-sized word you are accessing).
     // this address is instead a byte address
+    // the address of the byte in BRAM currently being accessed
     Reg #(Bit #(TAdd #(bram_addr_sz_, TLog #(TDiv #(bram_data_sz_, 8))))) rg_bram_addr_b <- mkRegU;
+    // the address of the last byte of BRAM we need for the next transaction
+    Reg #(Bit #(TAdd #(bram_addr_sz_, TLog #(TDiv #(bram_data_sz_, 8))))) rg_bram_addr_last_b <- mkRegU;
     Reg #(HWCrypto_Dir) rg_dir <- mkRegU;
     // TODO make this 64 general
     Reg #(Bit #(64)) rg_len <- mkRegU;
@@ -208,6 +216,151 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_d
     //     while still being aligned
     //     (ie if byte-aligned, do n single-byte reads, if 2byte aligned, do
     //     n/2 2byte reads etc)
+
+
+
+    rule rl_handle_write (rg_state == WRITE_BURST && ugshim_slave.w.canPut && rg_dir == BRAM2BUS);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto rl_handle_write");
+        end
+        let data = bram.read;
+        Bit #(TLog #(TDiv #(bram_data_sz_, 8))) bus_addr_lsb = truncate (rg_bus_addr);
+        Bit #(TLog #(TDiv #(bram_data_sz_, 8))) bram_addr_lsb = truncate (rg_bram_addr_b);
+
+        let bytes_accessed = 1 << pack (rg_last_req_size);
+        let bram_end_addr = {1'b0, bram_addr_lsb} + bytes_accessed;
+        Bit #(TLog #(TDiv #(bram_data_sz_, 8))) bram_end_addr_lsb = truncate (bram_end_addr);
+        Bit #(1)                                bram_end_addr_msb = truncateLSB (bram_end_addr);
+        let straddles_bram_word = bram_end_addr_msb==1'b1 && bram_end_addr_lsb!=0;
+
+        Bit #(TMul #(bram_data_sz_, 2)) data_rs = {0, data} >> {bram_addr_lsb, 3'b000};
+        if (straddles_bram_word) begin
+            data_rs = {data, 0} >> {bram_addr_lsb, 3'b000};
+            data_rs = data_rs | zeroExtend (rg_last_data);
+        end
+        Bit #(TMul #(bram_data_sz_, 2)) data_ls = truncate (data_rs) << {bus_addr_lsb, 3'b000};
+
+
+        Bit #(bram_be_) be_lsb = fn_size_to_be (rg_last_req_size);
+        let be_bus = be_lsb << bus_addr_lsb;
+        let be_bit = fn_byte_to_bit_enable (be_bus);
+        let data_masked = (truncate (data_ls) & be_bit) | (rg_last_data & ~be_bit);
+
+        rg_last_data <= truncateLSB (data_ls);
+
+        let new_bram_addr_last = rg_bram_addr_last_b + bytes_accessed;
+        Bit #(bram_addr_sz_) addr = truncate (new_bram_addr_last >> 3);
+        if (rg_verbosity > 1) begin
+            $display ( "    bram request data  -  addr: ", fshow (addr));
+        end
+        bram.put (0, addr, ?);
+
+        let new_flits_left = rg_flits_left - 1;
+        let new_bus_addr = rg_bus_addr + bytes_accessed;
+        let new_bytes_left = rg_bytes_left - bytes_accessed;
+        let new_bram_addr_b = rg_bram_addr_b + bytes_accessed;
+        // TODO this is wrong
+        rg_flits_left <= new_flits_left;
+        rg_bus_addr <= new_bus_addr;
+        rg_bram_addr_b <= new_bram_addr_b;
+        rg_bytes_left <= new_bytes_left;
+        if (rg_flits_left != 0) begin
+            rg_bram_addr_last_b <= new_bram_addr_last;
+        end
+
+        if (rg_verbosity > 1) begin
+            $display ( "    bytes_left: ", fshow (rg_bytes_left)
+                     , "  new_bytes_left: ", fshow (new_bytes_left)
+                     , "  new_flits_left: ", fshow (new_flits_left)
+                     , "  new_bus_addr: ", fshow (new_bus_addr)
+                     , "  rg_bram_addr_b: ", fshow (rg_bram_addr_b)
+                     , "  new_bram_addr_b: ", fshow (new_bram_addr_b)
+                     , "  new_bram_addr_last: ", fshow (new_bram_addr_last)
+                     , "  straddles_bram_word: ", fshow (straddles_bram_word));
+            $display ("    rg_last_data: ", fshow (rg_last_data), "  bram.read: ", fshow (bram.read), "  data_ls: ", fshow (data_ls), "  data_rs: ", fshow (data_rs));
+            $display ( "    be_bus: ", fshow (be_bus)
+                     , "  be_bit: ", fshow (be_bit)
+                     , "  data_masked: ", fshow (data_masked));
+        end
+
+        AXI4_WFlit #(m_data_, m_wuser_) wflit = AXI4_WFlit { wdata: data_masked
+                                                           , wstrb: be_bus
+                                                           , wlast: rg_flits_left == 0
+                                                           , wuser: 0
+                                                           };
+        ugshim_slave.w.put (wflit);
+        if (rg_verbosity > 0) begin
+            $display ("    flit: ", fshow (wflit));
+        end
+        if (rg_flits_left == 0) begin
+            if (new_bytes_left == 0) begin
+                $display (" finished");
+                rg_state <= IDLE;
+                snk.put (?);
+            end else begin
+                // need to write the next AWFlit if needed
+                rg_state <= WRITE_NEXT;
+            end
+        end
+    endrule
+
+    rule rl_drop_bresp (ugshim_slave.b.canPeek);
+        ugshim_slave.b.drop;
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto DataMover rl_drop_bresp, flit: ", fshow (ugshim_slave.b.peek));
+        end
+    endrule
+
+    rule rl_handle_next_write (rg_state == WRITE_NEXT
+                               && ugshim_slave.aw.canPut);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto rl_handle_next_write");
+        end
+        AXI4_AWFlit #(m_id_, m_addr_, m_awuser_) awflit = defaultValue;
+        awflit.awid = 0;
+        awflit.awaddr = rg_bus_addr;
+        if (rg_bytes_left >= fromInteger (valueOf (TDiv #(m_data_, 8)))) begin
+            // we can still make bus-width-aligned requests because the amount
+            // of data left is enough to support that
+            awflit.awsize = fromInteger (valueOf (TDiv #(m_data_, 8)));
+            // the tag controller forces bursts with 8 or fewer flits
+            // TODO replace TLog 3 with something cleaner
+            let shamt = fromInteger (valueOf (TLog #(TDiv #(m_data_, 8))));
+            let len = min (7, ((rg_bytes_left >> shamt) - 1));
+            awflit.awlen = truncate (len);
+            if (rg_verbosity > 0) begin
+                $display ("    making big transaction");
+            end
+        end else begin
+            // this is the last burst request
+            // make the maximum-sized request we can make
+            let max_req_size = fn_max_size (rg_bytes_left);
+            awflit.awsize = max_req_size;
+            Bit #(TLog #(3)) len = truncate ((rg_bytes_left >> pack (max_req_size)) - 1);
+            awflit.awlen = zeroExtend (len);
+            if (rg_verbosity > 0) begin
+                $display ("    making small transaction");
+            end
+        end
+
+        ugshim_slave.aw.put (awflit);
+        rg_last_req_size <= awflit.awsize;
+        rg_flits_left <= awflit.awlen;
+
+        let new_bram_addr_last = rg_bram_addr_last_b + (1 << pack (awflit.awsize));
+        Bit #(bram_addr_sz_) addr = truncateLSB (new_bram_addr_last);
+        bram.put (0, truncateLSB (addr), ?);
+        rg_bram_addr_last_b <= new_bram_addr_last;
+        if (rg_verbosity > 0) begin
+            $display ("    making BRAM request - addr: ", fshow (addr));
+        end
+
+        rg_state <= WRITE_BURST;
+
+        if (rg_verbosity > 0) begin
+            $display ("    flit: ", fshow (awflit));
+        end
+    endrule
 
 
     rule rl_handle_rresp (rg_state == WAIT_RRESP && ugshim_slave.r.canPeek && rg_dir == BUS2BRAM);
@@ -350,8 +503,9 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_d
             arflit.arsize = fromInteger (valueOf (TDiv #(m_data_, 8)));
             // the tag controller forces bursts with 8 or fewer flits
             // TODO replace TLog 3 with something cleaner
-            Bit #(TLog #(3)) len = truncate ((rg_bytes_left >> fromInteger (valueOf (TLog #(TDiv #(m_data_, 8))))) - 1);
-            arflit.arlen = zeroExtend (len);
+            let shamt = fromInteger (valueOf (TLog #(TDiv #(m_data_, 8))));
+            let len = min (7, ((rg_bytes_left >> shamt) - 1));
+            arflit.arlen = truncate (len);
             if (rg_verbosity > 0) begin
                 $display ("    making big transaction");
             end
@@ -473,7 +627,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_d
             awflit.awsize = flit_size;
             ugshim_slave.aw.put (awflit);
             // read the first word from BRAM
-            bram.put (0, 0, ?);
+            bram.put (0, bram_addr, ?);
             $display ("    awflit: ", fshow (awflit));
         end
 
@@ -481,11 +635,14 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_d
         rg_last_req_size <= flit_size;
         rg_flits_left <= flit_len;
         rg_bram_addr_b <= {bram_addr, 0};
+        rg_bram_addr_last_b <= {bram_addr, 0} + (1 << pack (flit_size)) - 1;
         rg_dir <= dir;
         rg_len <= len;
         rg_bytes_left <= len;
-        rg_state <= WAIT_RRESP;
+        rg_state <= dir == BUS2BRAM ? WAIT_RRESP : WRITE_BURST;
     endmethod
+
+    method Bool is_ready = rg_state == IDLE;
 
     interface axi_m = shim.master;
 
