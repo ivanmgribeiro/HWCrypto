@@ -15,7 +15,7 @@ typedef enum {
 } State deriving (Bits, Eq, FShow);
 
 interface HWCrypto_SHA256_IFC #(numeric type bram_addr_sz_);
-    method Action request (Bit #(bram_addr_sz_) bram_addr, Bit #(32) len, Bool is_last);
+    method Action request (SHA256_Req #(bram_addr_sz_) req);
     method Bool is_ready;
     method Action set_verbosity (Bit #(4) new_verb);
 endinterface
@@ -279,14 +279,22 @@ module mkHWCrypto_SHA256 #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_data_
     // TODO make length type more general
     // Assumes that the next 1536 bits of the BRAM are also clear (ie there are 512b of data and 2048b
     // of scratch space in total including data)
-    method Action request (Bit #(bram_addr_sz_) bram_addr, Bit #(32) len, Bool is_last) if (rg_state == IDLE);
+    method Action request (SHA256_Req #(bram_addr_sz_) req) if (rg_state == IDLE);
+        let bram_addr = req.bram_addr;
+        let len       = req.len;
+        let is_first  = req.is_first;
+
         // TODO fix this
         // for now, assume we always have 512b inputs
         rg_rnd_ctr <= 16;
         rg_read_ctr <= 0;
         rg_bram_base <= {bram_addr, 1'b0};
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto SHA256 - request - bram_addr: ", fshow (bram_addr), "  len: ", fshow (len), "  is_last: ", fshow (is_last));
+            $display ("%m HWCrypto SHA256 - request - bram_addr: ", fshow (bram_addr), "  len: ", fshow (len), "  is_last: ", fshow (is_first));
+        end
+        if (is_first) begin
+            v_rg_hash[0] <= 'h6A09E667; v_rg_hash[1] <= 'hBB67AE85; v_rg_hash[2] <= 'h3C6EF372; v_rg_hash[3] <= 'hA54FF53A;
+            v_rg_hash[4] <= 'h510E527F; v_rg_hash[5] <= 'h9B05688C; v_rg_hash[6] <= 'h1F83D9AB; v_rg_hash[7] <= 'h5BE0CD19;
         end
         rg_state <= READ;
     endmethod

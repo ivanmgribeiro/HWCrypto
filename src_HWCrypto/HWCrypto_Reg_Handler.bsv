@@ -17,11 +17,7 @@ interface HWCrypto_Reg_Handler_IFC #( numeric type s_id_
                                     );
     interface AXI4_Slave #(`SPARAMS) axi_s;
     // TODO make this 64 general
-    (* always_ready *) method Bit #(64) data_ptr;
-    (* always_ready *) method Bit #(64) data_len;
-    (* always_ready *) method Bit #(64) key_ptr;
-    (* always_ready *) method Bit #(64) key_len;
-    (* always_ready *) method Bit #(64) dest_ptr;
+    (* always_ready *) method HWCrypto_Regs regs;
     method Action set_verbosity (Bit #(4) new_verb);
     method Action reset;
 endinterface
@@ -178,11 +174,14 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk)
 
     interface axi_s = shim.slave;
 
-    method Bit #(64) data_ptr = rg_data_ptr;
-    method Bit #(64) data_len = rg_data_len;
-    method Bit #(64) key_ptr  = rg_key_ptr;
-    method Bit #(64) key_len  = rg_key_len;
-    method Bit #(64) dest_ptr = rg_dest_ptr;
+    method HWCrypto_Regs regs;
+        return HWCrypto_Regs { data_ptr: rg_data_ptr
+                             , data_len: rg_data_len
+                             , key_ptr:  rg_key_ptr
+                             , key_len:  rg_key_len
+                             , dest_ptr: rg_dest_ptr
+                             };
+    endmethod
 
     method Action set_verbosity (Bit #(4) new_verb);
         rg_verbosity <= new_verb;

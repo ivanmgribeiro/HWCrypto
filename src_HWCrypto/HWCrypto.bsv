@@ -8,6 +8,7 @@ import HWCrypto_Reg_Handler :: *;
 import HWCrypto_Data_Mover :: *;
 import HWCrypto_Types :: *;
 import HWCrypto_SHA256 :: *;
+import HWCrypto_Controller :: *;
 import SourceSink :: *;
 import BRAMCore :: *;
 import FIFOF :: *;
@@ -76,84 +77,26 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
     BRAM_DUAL_PORT_BE #(Bit #(32), Bit #(m_data_), TDiv #(m_data_, 8)) bram <- mkBRAMCore2BE (512, False);
     HWCrypto_Data_Mover_IFC #(`MPARAMS, 32) data_mover <- mkHWCrypto_Data_Mover (bram.a, toSink (fifo_copy_end));
     HWCrypto_SHA256_IFC #(32) sha256 <- mkHWCrypto_SHA256 (bram.b, toSink (fifo_sha256_end));
+    HWCrypto_Controller_IFC #(m_addr_, 32, 4) controller
+        <- mkHWCrypto_Controller ( toSource (fifo_reg_trigger)
+                                 , data_mover.is_ready
+                                 , toSource (fifo_copy_end)
+                                 , sha256.is_ready
+                                 , toSource (fifo_sha256_end)
+                                 , reg_handler.regs
+                                 );
 
-    rule rl_pipe;
-        let enq_bram_print_req = False;
-        if (rg_verbosity > 0 && !fifo_print_bram.notEmpty) begin
-            $display ("%m HWCrypto rl_pipe");
-        end
-        if (fifo_reg_trigger.notEmpty && data_mover.is_ready) begin
-            // request print of BRAM if it's not already been requested
-            if (rg_verbosity > 1 && fifo_print_bram.notFull && !rg_print_requested) begin
-                if (!rg_print_requested) begin
-                    $display ("    printing BRAM contents");
-                    enq_bram_print_req = True;
-                end
-            end
-            // if we have high verbosity, wait until the bram is finished printing
-            if ((rg_verbosity > 1 && rg_print_requested && !fifo_print_bram.notEmpty)
-                 || rg_verbosity <= 1) begin
-                // TODO this might need to change if we want to use different parts of the BRAM
-                let bram_addr = 0;
-                data_mover.request (reg_handler.data_ptr, bram_addr, BUS2BRAM, reg_handler.data_len);
-                fifo_reg_trigger.deq;
-                if (rg_verbosity > 0) begin
-                    $display ( "    making data mover request, parameters -"
-                             , "  addr: ", fshow (reg_handler.data_ptr)
-                             , "  len: ", fshow (reg_handler.data_len)
-                             , "  bram addr: ", fshow (bram_addr)
-                             , "  dir: ", fshow (BUS2BRAM));
-                end
-            end
-        end
-        if (fifo_copy_end.notEmpty && sha256.is_ready) begin
-            // request print of BRAM if it's not already been requested
-            if (rg_verbosity > 1 && fifo_print_bram.notFull && !rg_print_requested) begin
-                if (!rg_print_requested) begin
-                    $display ("    printing BRAM contents");
-                    enq_bram_print_req = True;
-                end
-            end
-            // if we have high verbosity, wait until the bram is finished printing
-            if ((rg_verbosity > 1 && rg_print_requested && !fifo_print_bram.notEmpty)
-                 || rg_verbosity <= 1) begin
-                let bram_addr = 0;
-                let bram_len = 512;
-                let is_last = True;
-                sha256.request (bram_addr, bram_len, is_last);
-                if (rg_verbosity > 0) begin
-                    $display ( "    making sha256 request, parameters -"
-                             , "  addr: ", fshow (bram_addr)
-                             , "  len: ", fshow (bram_len)
-                             , "  is_last: ", fshow (is_last));
-                end
-            end
-        end
-        if (fifo_sha256_end.notEmpty) begin
-            // request print of BRAM if it's not already been requested
-            if (rg_verbosity > 1 && fifo_print_bram.notFull && !rg_print_requested) begin
-                if (!rg_print_requested) begin
-                    $display ("    printing BRAM contents");
-                    enq_bram_print_req = True;
-                end
-            end
-            // if we have high verbosity, wait until the bram is finished printing
-            if ((rg_verbosity > 1 && rg_print_requested && !fifo_print_bram.notEmpty)
-                || rg_verbosity <= 1) begin
-            end
-        end
-
-        if (rg_verbosity > 1) begin
-            if (enq_bram_print_req) begin
-                rg_bram_ctr <= 0;
-                fifo_print_bram.enq (?);
-                rg_print_requested <= True;
-            end else if (rg_print_requested && !fifo_print_bram.notEmpty) begin
-                rg_print_requested <= False;
-            end
+    rule rl_forward_dm_req;
+        if (isValid (controller.data_mover_req)) begin
+            data_mover.request (controller.data_mover_req.Valid);
         end
     endrule
 
+    rule rl_forward_sha256_req;
+        if (isValid (controller.sha256_req)) begin
+            sha256.request (controller.sha256_req.Valid);
+        end
+    endrule
 
     Reg #(Bool) rg_print_bram <- mkReg (False);
     Reg #(Bool) rg_print_bram_finished <- mkReg (False);
@@ -180,6 +123,7 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
         reg_handler.set_verbosity (new_verb);
         data_mover.set_verbosity (new_verb);
         sha256.set_verbosity (new_verb);
+        controller.set_verbosity (new_verb);
     endmethod
 
     method Action reset;

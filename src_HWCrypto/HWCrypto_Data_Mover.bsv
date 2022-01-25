@@ -42,7 +42,7 @@ interface HWCrypto_Data_Mover_IFC #( // bus interface
                                    , numeric type bram_addr_sz_
                                    );
     interface AXI4_Master #(`MPARAMS) axi_m;
-    method Action request (Bit #(m_addr_) bus_addr, Bit #(bram_addr_sz_) bram_addr, HWCrypto_Dir dir, Bit #(64) len);
+    method Action request (Data_Mover_Req #(m_addr_, bram_addr_sz_) req);
     method Bool is_ready;
     method Action set_verbosity (Bit #(4) new_verb);
 endinterface
@@ -535,11 +535,13 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_d
 
 
 
-    method Action request ( Bit #(m_addr_) bus_addr
-                          , Bit #(bram_addr_sz_) bram_addr
-                          , HWCrypto_Dir dir
-                          , Bit #(64) len)
+    method Action request (Data_Mover_Req #(m_addr_, bram_addr_sz_) req)
                           if (rg_state == IDLE);
+        let bus_addr  = req.bus_addr;
+        let len       = req.len;
+        let bram_addr = req.bram_addr;
+        let dir       = req.dir;
+
         let b_to_align = fn_bytes_to_align (bus_addr);
 
         // maximum request size allowed by address alignment
