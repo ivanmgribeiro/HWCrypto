@@ -221,7 +221,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
 
     rule rl_handle_write (rg_state == WRITE_BURST && ugshim_slave.w.canPut && rg_dir == BRAM2BUS);
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto rl_handle_write");
+            $display ("%m HWCrypto DataMover rl_handle_write");
         end
         let data = bram.read;
         Bit #(TLog #(TDiv #(bram_data_sz_, 8))) bus_addr_lsb = truncate (rg_bus_addr);
@@ -307,14 +307,15 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
     rule rl_drop_bresp (ugshim_slave.b.canPeek);
         ugshim_slave.b.drop;
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto DataMover rl_drop_bresp, flit: ", fshow (ugshim_slave.b.peek));
+            $display ("%m HWCrypto DataMover rl_drop_bresp");
+            $display ("    flit: ", fshow (ugshim_slave.b.peek));
         end
     endrule
 
     rule rl_handle_next_write (rg_state == WRITE_NEXT
                                && ugshim_slave.aw.canPut);
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto rl_handle_next_write");
+            $display ("%m HWCrypto DataMover rl_handle_next_write");
         end
         AXI4_AWFlit #(m_id_, m_addr_, m_awuser_) awflit = defaultValue;
         awflit.awid = 0;
@@ -368,7 +369,8 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
         ugshim_slave.r.drop;
         let bytes_read = 1 << pack (rg_last_req_size);
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto rl_handle_rresp flit: ", fshow (rflit));
+            $display ("%m HWCrypto DataMover rl_handle_rresp");
+            $display ("    flit: ", fshow (rflit));
         end
 
         // need to combine data from last read with data from this read
@@ -480,7 +482,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
         let data = rg_last_data;
         bram.put (True, addr, data);
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto rl_finish_write: writing last word");
+            $display ("%m HWCrypto DataMover rl_finish_write: writing last word");
             $display ("    addr: ", fshow (addr), ", data: ", fshow (data));
         end
         rg_state <= IDLE;
@@ -492,7 +494,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
     rule rl_fetch_next (rg_state == FETCH_NEXT
                         && ugshim_slave.ar.canPut);
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto rl_fetch_next");
+            $display ("%m HWCrypto DataMover rl_fetch_next");
         end
         AXI4_ARFlit #(m_id_, m_addr_, m_aruser_) arflit = defaultValue;
         arflit.arid = 0;
