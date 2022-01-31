@@ -14,9 +14,9 @@ module mkTest_Top (Empty);
 
     Vector #(12, Test_Elem) test_seq = newVector;
     test_seq[0]  = Test_Elem {delay:  0, addr:  0, data:  0, is_read: False};
-    test_seq[1]  = Test_Elem {delay: 50, addr:  8, data:  64, is_read: False};
-    test_seq[2]  = Test_Elem {delay: 50, addr: 16, data:  4, is_read: False};
-    test_seq[3]  = Test_Elem {delay: 50, addr: 24, data:  4, is_read: False};
+    test_seq[1]  = Test_Elem {delay: 50, addr:  8, data:  11, is_read: False};
+    test_seq[2]  = Test_Elem {delay: 50, addr: 16, data:  0, is_read: False};
+    test_seq[3]  = Test_Elem {delay: 50, addr: 24, data:  11, is_read: False};
     test_seq[4]  = Test_Elem {delay: 50, addr: 32, data:  'h1000_0001, is_read: False};
     test_seq[5]  = Test_Elem {delay: 50, addr:  0, data:  ?, is_read: True};
     test_seq[6]  = Test_Elem {delay: 50, addr:  8, data:  ?, is_read: True};

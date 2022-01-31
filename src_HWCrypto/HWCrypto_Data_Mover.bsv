@@ -61,7 +61,7 @@ endinterface
  *  First, we need to align the address so we can fetch bigger things (AXI4
  *  means that our requests must always be size-aligned
  */
-module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_), bram_be_) bram, Sink #(Token) snk)
+module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_)) bram, Sink #(Token) snk)
                                (HWCrypto_Data_Mover_IFC #(`MPARAMS, bram_addr_sz_))
                                provisos ( Add#(a__, TLog#(TAdd#(1, TLog#(TDiv#(m_data_, 8)))), 3)
                                         , Add#(b__, 10, m_addr_)
@@ -253,7 +253,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_d
         if (rg_verbosity > 1) begin
             $display ( "    bram request data  -  addr: ", fshow (addr));
         end
-        bram.put (0, addr, ?);
+        bram.put (False, addr, ?);
 
         let new_flits_left = rg_flits_left - 1;
         let new_bus_addr = rg_bus_addr + bytes_accessed;
@@ -349,7 +349,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_d
 
         let new_bram_addr_last = rg_bram_addr_last_b + (1 << pack (awflit.awsize));
         Bit #(bram_addr_sz_) addr = truncateLSB (new_bram_addr_last);
-        bram.put (0, truncateLSB (addr), ?);
+        bram.put (False, truncateLSB (addr), ?);
         rg_bram_addr_last_b <= new_bram_addr_last;
         if (rg_verbosity > 0) begin
             $display ("    making BRAM request - addr: ", fshow (addr));
@@ -433,7 +433,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_d
                      , "  new_last_data: ", fshow (new_last_data)
                      , "  straddles_bram_word: ", fshow (straddles_bram_word));
         end
-        bram.put (~0, addr, data);
+        bram.put (True, addr, data);
 
         let new_flits_left = rg_flits_left - 1;
         let new_bus_addr = rg_bus_addr + bytes_read;
@@ -478,7 +478,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_d
     rule rl_finish_write (rg_state == WRITE_LAST);
         Bit #(bram_addr_sz_) addr = truncate (rg_bram_addr_b >> 3);
         let data = rg_last_data;
-        bram.put (~0, addr, data);
+        bram.put (True, addr, data);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto rl_finish_write: writing last word");
             $display ("    addr: ", fshow (addr), ", data: ", fshow (data));
@@ -629,7 +629,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT_BE #(Bit #(bram_addr_sz_), Bit #(bram_d
             awflit.awsize = flit_size;
             ugshim_slave.aw.put (awflit);
             // read the first word from BRAM
-            bram.put (0, bram_addr, ?);
+            bram.put (False, bram_addr, ?);
             $display ("    awflit: ", fshow (awflit));
         end
 

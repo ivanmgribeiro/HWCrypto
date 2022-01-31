@@ -9,9 +9,11 @@ import HWCrypto_Data_Mover :: *;
 import HWCrypto_Types :: *;
 import HWCrypto_SHA256 :: *;
 import HWCrypto_Controller :: *;
+import HWCrypto_Utils :: *;
 import SourceSink :: *;
 import BRAMCore :: *;
 import FIFOF :: *;
+import Vector :: *;
 import Connectable :: *;
 
 interface HWCrypto_IFC #( // master interface parameters
@@ -74,10 +76,21 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
 
     let reg_handler <- mkHWCrypto_Reg_Handler (toSink (fifo_reg_trigger));
     // TODO change 512
-    BRAM_DUAL_PORT_BE #(Bit #(32), Bit #(m_data_), TDiv #(m_data_, 8)) bram <- mkBRAMCore2BE (512, False);
+    BRAM_DUAL_PORT #(Bit #(32), Bit #(m_data_)) key_bram <- mkBRAMCore2 (512, False);
+    BRAM_DUAL_PORT #(Bit #(32), Bit #(m_data_)) data_bram <- mkBRAMCore2 (512, False);
+    BRAM_DP_XOR_IFC #(Bit #(32), Bit #(m_data_)) key_bram_xor <- mkBRAM_DP_XOR (key_bram);
+    Wire #(Bit #(TLog #(2))) dw_bram_index <- mkDWire (0);
+    Vector #(2, BRAM_DUAL_PORT #(Bit #(32), Bit #(m_data_))) v_brams = newVector;
+    v_brams[0] = key_bram_xor.bram;
+    v_brams[1] = data_bram;
+
+    let bram <- mkHWCrypto_BRAM_DP_Mux (v_brams, dw_bram_index);
+
+
+
     HWCrypto_Data_Mover_IFC #(`MPARAMS, 32) data_mover <- mkHWCrypto_Data_Mover (bram.a, toSink (fifo_copy_end));
     HWCrypto_SHA256_IFC #(32) sha256 <- mkHWCrypto_SHA256 (bram.b, toSink (fifo_sha256_end));
-    HWCrypto_Controller_IFC #(m_addr_, 32, 4) controller
+    HWCrypto_Controller_IFC #(m_addr_, 32, m_data_, 2) controller
         <- mkHWCrypto_Controller ( toSource (fifo_reg_trigger)
                                  , data_mover.is_ready
                                  , toSource (fifo_copy_end)
@@ -98,6 +111,19 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
         end
     endrule
 
+    rule rl_forward_pad_ctrl (isValid (controller.key_pad_ctrl));
+        let ctrl = controller.key_pad_ctrl.Valid;
+        key_bram_xor.set_pad (tpl_1 (ctrl), tpl_2 (ctrl));
+    endrule
+
+    rule rl_forward_xor_ctrl (isValid (controller.key_xor_ctrl));
+        key_bram_xor.set_xor (controller.key_xor_ctrl.Valid);
+    endrule
+
+    rule rl_forward_bram_index;
+        dw_bram_index <= controller.bram_index;
+    endrule
+
     Reg #(Bool) rg_print_bram <- mkReg (False);
     Reg #(Bool) rg_print_bram_finished <- mkReg (False);
 
@@ -107,7 +133,7 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
         end
         if (rg_bram_ctr < 64) begin
             rg_bram_ctr <= rg_bram_ctr + 1;
-            bram.b.put (0, rg_bram_ctr, ?);
+            bram.b.put (False, rg_bram_ctr, ?);
         end else begin
             fifo_print_bram.deq;
         end

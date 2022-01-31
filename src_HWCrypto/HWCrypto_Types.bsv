@@ -19,6 +19,7 @@ typedef struct {
     Bit #(bram_addr_sz_) bram_addr;
     Bit #(32) len;
     Bool is_first;
+    Bool is_last;
 } SHA256_Req #(numeric type bram_addr_sz_) deriving (Bits, FShow);
 
 // TODO generalise?
