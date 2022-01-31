@@ -115,7 +115,7 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
             let other = zeroExtend ({1'b1, 7'b0}) << (lsb << shamt);
             return other | (raw & raw_mask);
         end else if (addr == fromInteger (512/valueOf (bram_data_sz_) - 1)) begin
-            return fn_rev_byte_order (zeroExtend (len_this << 3));
+            return fn_rev_byte_order (zeroExtend (len_total << 3));
         end else begin
             return 0;
         end
@@ -320,6 +320,7 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
             end
         end
         rg_state <= IDLE;
+        snk.put (?);
     endrule
 
 
