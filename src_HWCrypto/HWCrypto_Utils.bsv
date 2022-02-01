@@ -2,6 +2,8 @@ package HWCrypto_Utils;
 
 import BRAMCore :: *;
 import Vector :: *;
+import SourceSink :: *;
+import HWCrypto_Types :: *;
 
 interface BRAM_PORT_XOR #(type addr_t_, type data_t_);
     interface BRAM_PORT #(addr_t_, data_t_) bram;
@@ -109,6 +111,57 @@ module mkHWCrypto_BRAM_DP_Mux #( Vector #(n_, BRAM_DUAL_PORT #(addr_t_, data_t_)
     let port_b <- mkHWCrypto_BRAM_Mux (bs, index);
     interface a = port_a;
     interface b = port_b;
+endmodule
+
+function Bit #(TMul #(n_, 8)) fn_rev_byte_order (Bit #(TMul #(n_, 8)) in)
+    provisos (Add#(z__, 8, TMul#(n_, 8)));
+    Bit #(TMul #(n_, 8)) res = 0;
+    for (Integer i = 0; i < valueOf (TMul #(n_, 8)); i = i+8) begin
+        Bit #(8) val = truncate (in >> fromInteger (valueOf (TMul #(n_, 8)) - i - 8));
+        res[i + 7:i] = val;
+    end
+    return truncateLSB (res);
+endfunction
+
+interface Hash_Copy_IFC;
+    method Bool is_ready;
+endinterface
+
+module mkCopy_Hash_To_BRAM #( Vector #(n_, Bit #(rg_sz_)) v_rg_data
+                            , BRAM_PORT #(Bit #(addr_sz_), Bit #(data_sz_)) bram
+                            , Bool run
+                            , Sink #(Token) snk)
+                            (Hash_Copy_IFC)
+                            provisos ( Mul #(rg_sz_, rg_in_data_, data_sz_)
+                                     , Add#(b__, TAdd#(TLog#(n_), 1), addr_sz_)
+                                     , Add#(c__, rg_sz_, data_sz_)
+                                     , Mul#(a__, 8, data_sz_)
+                                     , Add#(d__, 8, TMul#(a__, 8)));
+    Reg #(Bool) rg_started <- mkReg (False);
+    Reg #(Bit #(TAdd #(TLog #(n_), 1))) rg_ctr <- mkReg (0);
+
+    rule rl_start (!rg_started);
+        if (run) begin
+            rg_started <= True;
+        end
+    endrule
+    rule rl_copy (rg_started);
+        if (rg_ctr >= fromInteger (valueOf (n_))) begin
+            rg_started <= False;
+            snk.put (?);
+        end else begin
+            Bit #(data_sz_) to_write = 0;
+            // data written needs to be reversed so that it is in the right order
+            // in the BRAMs
+            // the first byte of the hash should be in the lowest byte of BRAM
+            for (Integer i = 0; i < valueOf (rg_in_data_); i = i+1) begin
+                to_write = to_write | (zeroExtend (v_rg_data[rg_ctr + fromInteger (i)]) << (valueOf (rg_sz_) * (valueOf (rg_in_data_) - i - 1)));
+            end
+            bram.put (True, zeroExtend (rg_ctr >> log2 (valueOf (rg_in_data_))), fn_rev_byte_order (to_write));
+        end
+        rg_ctr <= rg_ctr + fromInteger (valueOf (rg_in_data_));
+    endrule
+    method is_ready = !rg_started;
 endmodule
 
 endpackage

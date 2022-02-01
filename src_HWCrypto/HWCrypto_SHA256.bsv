@@ -2,6 +2,7 @@ package HWCrypto_SHA256;
 
 import SourceSink :: *;
 import HWCrypto_Types :: *;
+import HWCrypto_Utils :: *;
 import BRAMCore :: *;
 import Vector :: *;
 
@@ -17,6 +18,7 @@ typedef enum {
 interface HWCrypto_SHA256_IFC #(numeric type bram_addr_sz_);
     method Action request (SHA256_Req #(bram_addr_sz_) req);
     method Bool is_ready;
+    method Vector #(8, Bit #(32)) hash_regs;
     method Action set_verbosity (Bit #(4) new_verb);
 endinterface
 
@@ -83,16 +85,6 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
     // TODO generalise this?
     function Bit #(32) fn_read_32_from_64 (Bit #(64) data, Bit #(1) addr);
         return addr == 1'b1 ? truncateLSB (data) : truncate (data);
-    endfunction
-
-    function Bit #(TMul #(n_, 8)) fn_rev_byte_order (Bit #(TMul #(n_, 8)) in)
-        provisos (Add#(z__, 8, TMul#(n_, 8)));
-        Bit #(TMul #(n_, 8)) res = 0;
-        for (Integer i = 0; i < valueOf (TMul #(n_, 8)); i = i+8) begin
-            Bit #(8) val = truncate (in >> fromInteger (valueOf (TMul #(n_, 8)) - i - 8));
-            res[i + 7:i] = val;
-        end
-        return truncateLSB (res);
     endfunction
 
     // expected combinations of pad and append_len:
@@ -385,6 +377,8 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
         rg_pad_one <= pad_one;
         rg_state <= READ;
     endmethod
+
+    method hash_regs = readVReg (v_rg_hash);
 
     method Bool is_ready = rg_state == IDLE;
 

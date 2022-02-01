@@ -70,6 +70,7 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
     FIFOF #(Token) fifo_reg_trigger <- mkUGFIFOF1;
     FIFOF #(Token) fifo_copy_end    <- mkUGFIFOF1;
     FIFOF #(Token) fifo_sha256_end  <- mkUGFIFOF1;
+    FIFOF #(Token) fifo_hash_copy_end <- mkUGFIFOF;
     FIFOF #(Token) fifo_print_bram  <- mkUGFIFOF1;
     Reg #(Bool) rg_print_requested <- mkReg (False);
     Reg #(Bit #(32)) rg_bram_ctr <- mkReg (0);
@@ -80,6 +81,7 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
     BRAM_DUAL_PORT #(Bit #(32), Bit #(m_data_)) data_bram <- mkBRAMCore2 (512, False);
     BRAM_DP_XOR_IFC #(Bit #(32), Bit #(m_data_)) key_bram_xor <- mkBRAM_DP_XOR (key_bram);
     Wire #(Bit #(TLog #(2))) dw_bram_index <- mkDWire (0);
+    Wire #(Bool) dw_run_hash_copy <- mkDWire (False);
     Vector #(2, BRAM_DUAL_PORT #(Bit #(32), Bit #(m_data_))) v_brams = newVector;
     v_brams[0] = key_bram_xor.bram;
     v_brams[1] = data_bram;
@@ -90,15 +92,21 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
 
     HWCrypto_Data_Mover_IFC #(`MPARAMS, 32) data_mover <- mkHWCrypto_Data_Mover (bram.a, toSink (fifo_copy_end));
     HWCrypto_SHA256_IFC #(32) sha256 <- mkHWCrypto_SHA256 (bram.b, toSink (fifo_sha256_end));
+    let hash_copy <- mkCopy_Hash_To_BRAM (sha256.hash_regs, data_bram.a, dw_run_hash_copy, toSink (fifo_hash_copy_end));
     HWCrypto_Controller_IFC #(m_addr_, 32, m_data_, 2) controller
         <- mkHWCrypto_Controller ( toSource (fifo_reg_trigger)
                                  , data_mover.is_ready
                                  , toSource (fifo_copy_end)
                                  , sha256.is_ready
                                  , toSource (fifo_sha256_end)
+                                 , hash_copy.is_ready
+                                 , toSource (fifo_hash_copy_end)
                                  , reg_handler.regs
                                  );
 
+
+
+    (* conflict_free="rl_forward_dm_req, hash_copy_rl_copy" *)
     rule rl_forward_dm_req;
         if (isValid (controller.data_mover_req)) begin
             data_mover.request (controller.data_mover_req.Valid);
@@ -122,6 +130,10 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
 
     rule rl_forward_bram_index;
         dw_bram_index <= controller.bram_index;
+    endrule
+
+    rule rl_forward_run_hash_copy;
+        dw_run_hash_copy <= controller.run_hash_copy;
     endrule
 
     Reg #(Bool) rg_print_bram <- mkReg (False);

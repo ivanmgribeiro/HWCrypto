@@ -14,7 +14,14 @@ typedef enum {
     HASH_KEY_REQ,
     REQ_DATA,
     WAIT_DATA,
+    REQ_HASH,
     WAIT_HASH,
+    START_INNER_HASH,
+    CONTINUE_INNER_HASH,
+    CONTINUE_WITH_DATA,
+    COPY_HASH,
+    WAIT_COPY_HASH,
+    OUTER_HASH,
     FINISH
 } State deriving (Bits, Eq, FShow);
 
@@ -37,6 +44,8 @@ interface HWCrypto_Controller_IFC #( numeric type m_addr_
     (* always_ready *)
     method Bit #(TLog #(n_brams_)) bram_index;
 
+    method Bool run_hash_copy;
+
     method Action set_verbosity (Bit #(4) new_verb);
 endinterface
 
@@ -45,6 +54,8 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                               , Source #(Token) src_data_mover
                               , Bool sha256_is_ready
                               , Source #(Token) src_sha256
+                              , Bool hash_copy_is_ready
+                              , Source #(Token) src_hash_copy
                               , HWCrypto_Regs regs)
                               (HWCrypto_Controller_IFC #(m_addr_, bram_addr_sz_, bram_data_sz_, n_brams_))
                               provisos ( Add#(0, 64, m_addr_)
@@ -57,16 +68,25 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
     Reg #(Bit #(64)) rg_hash_chunk_ctr <- mkReg (0);
     Reg #(Bit #(TLog #(n_brams_))) rg_bram_index <- mkReg (0);
+    Reg #(Bit #(TLog #(n_brams_))) rg_bram_index_next <- mkReg (0);
 
     RWire #(Data_Mover_Req #(m_addr_, bram_addr_sz_)) rw_data_mover_req <- mkRWire;
     RWire #(SHA256_Req #(bram_addr_sz_)) rw_sha256_req <- mkRWire;
     RWire #(Tuple2 #(Bool, Bit #(TAdd #(bram_addr_sz_, TLog #(TDiv #(bram_data_sz_, 8)))))) rw_key_pad_ctrl <- mkRWire;
     RWire #(Bit #(bram_data_sz_)) rw_key_xor_ctrl <- mkRWire;
+    Wire #(Bool) dw_run_hash_copy <- mkDWire (False);
 
     Reg #(Bit #(64)) rg_chunks_done <- mkRegU;
+    Reg #(Bit #(64)) rg_data_chunks_read <- mkRegU;
+    Reg #(Bit #(64)) rg_chunks_total <- mkRegU;
     Reg #(Bit #(TAdd #(TLog #(64), 1))) rg_chunk_len <- mkRegU;
+    Reg #(Bit #(64)) rg_hash_total_len <- mkRegU;
+    Reg #(Bool) rg_chunks_need_extra <- mkRegU;
     Reg #(Bool) rg_chunk_is_first <- mkRegU;
     Reg #(Bool) rg_chunk_is_last <- mkRegU;
+    Reg #(Bool) rg_chunk_pad_one <- mkRegU;
+
+    Reg #(Bit #(64)) rg_hash_ptr <- mkRegU;
 
     function Bit #(TMul #(n_, 8)) fn_replicate_byte (Bit #(8) value)
         provisos (Add#(z__, 8, TMul#(n_, 8)));
@@ -87,14 +107,12 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             if (rg_verbosity > 0) begin
                 $display ("    going to REQ_KEY_LONG");
             end
-            //rg_state <= REQ_KEY_LONG;
-            rg_state <= REQ_DATA;
+            rg_state <= REQ_KEY_LONG;
         end else begin
             if (rg_verbosity > 0) begin
                 $display ("    going to REQ_KEY_SHORT");
             end
-            //rg_state <= REQ_KEY_SHORT;
-            rg_state <= REQ_DATA;
+            rg_state <= REQ_KEY_SHORT;
         end
         rg_bram_index <= 0;
         rg_chunks_done <= 0;
@@ -138,7 +156,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         end
         rw_key_xor_ctrl.wset (fn_replicate_byte ('h36));
 
-        rg_state <= HASH_KEY_REQ;
+        rg_state <= START_INNER_HASH;
     endrule
 
     rule rl_hash_key_req (rg_state == HASH_KEY_REQ
@@ -164,51 +182,122 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     endrule
 
 
-
-    rule rl_req_data (rg_state == REQ_DATA
-                      && data_mover_is_ready);
+    rule rl_start_inner_hash (rg_state == START_INNER_HASH
+                              && sha256_is_ready);
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto Controller rl_req_data");
+            $display ("%m HWCrypto Controller rl_start_inner_hash");
         end
+        SHA256_Req #(bram_addr_sz_) sha_req
+            = SHA256_Req { bram_addr  : 0
+                         , len        : 64
+                         , reset_hash : True
+                         , pad_one    : False
+                         , pad_zeroes : False
+                         , append_len : False};
+        rw_sha256_req.wset (sha_req);
+        rg_state <= CONTINUE_INNER_HASH;
+    endrule
 
-        // find the number of 64byte chunks that we will need
+    rule rl_continue_inner_hash (rg_state == CONTINUE_INNER_HASH
+                                 && src_sha256.canPeek);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_continue_inner_hash");
+        end
+        src_sha256.drop;
+
+        rg_bram_index <= 1;
+        rg_state <= CONTINUE_WITH_DATA;
+        rg_state_next <= COPY_HASH; // TODO
+        let total_len = regs.data_len + 64;
+        rg_hash_total_len <= total_len;
+        rg_hash_ptr <= regs.data_ptr;
+        rg_chunks_done <= 1;
+        rg_data_chunks_read <= 0;
+
         Bit #(TLog #(64)) len_bottom_bits = truncate (regs.data_len);
-        Bit #(1) bottom_red = reduceOr (len_bottom_bits);
-        Bool last_is_full = bottom_red == 1'b0;
-        let num_chunks = (regs.data_len >> (log2 (64))) + zeroExtend (bottom_red);
+        let last_over_55 = len_bottom_bits > 55;
+        //let last_is_64 = reduceOr (len_bottom_bits) == 1'b0;
+        //let need_extra_chunk = last_over_55 || last_is_64;
+        //rg_chunks_need_empty_chunk <= last_over_55;
+
+        // if the last chunk is more than 55 bytes long we will need an extra
+        // chunk which is empty apart from 0s and the length and possibly a
+        // 1 at the start
+        rg_chunks_total <= (regs.data_len >> (log2 (64))) + (last_over_55 ? 3 : 2);
+        if (rg_verbosity > 0) begin
+            $display ( "    total_len: ", fshow (total_len)
+                     , "  len_bottom_bits: ", fshow (len_bottom_bits)
+                     , "  last_over_55: ", fshow (last_over_55));
+        end
+    endrule
+
+
+
+
+    rule rl_continue_hash_with_data (rg_state == CONTINUE_WITH_DATA
+                                     && data_mover_is_ready);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_continue_hash_with_data");
+        end
+        // find the number of 64byte chunks that we will need
+        Bit #(TLog #(64)) len_bottom_bits = truncate (rg_hash_total_len);
+        Bit #(1) bottom_or = reduceOr (len_bottom_bits);
+        Bool last_is_64 = bottom_or == 1'b0;
+        Bool last_over_55 = len_bottom_bits > 55;
+        let num_chunks = rg_chunks_total;
         if (rg_verbosity > 0) begin
             $display ( "    num_chunks: ", fshow (num_chunks)
                      , "  rg_chunks_done: ", fshow (rg_chunks_done)
-                     , "  last_is_full: ", fshow (last_is_full));
+                     , "  rg_data_chunks_read: ", fshow (rg_data_chunks_read)
+                     , "  last_is_64: ", fshow (last_is_64));
         end
 
         if (rg_chunks_done == num_chunks) begin
             // we are done
-            rg_state <= FINISH;
+            rg_state <= rg_state_next;
+            if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller data hash finished");
+            $display ("    going to ", fshow (rg_state_next));
+            end
         end else begin
             let is_last = rg_chunks_done == num_chunks - 1;
+            let is_second_last = rg_chunks_done == num_chunks - 2;
             // request the next chunk from memory and hash it
-            let len = is_last && !last_is_full ? zeroExtend (len_bottom_bits) : 64;
-            Data_Mover_Req #(m_addr_, bram_addr_sz_) dm_req
-                = Data_Mover_Req { bus_addr  : regs.data_ptr + (rg_chunks_done << log2 (64))
-                                 , bram_addr : 0
-                                 , dir       : BUS2BRAM
-                                 , len       : len};
-            rw_data_mover_req.wset (dm_req);
-            if (rg_verbosity > 0) begin
-                $display ("    dm_req: ", fshow (dm_req));
-                $display ("    going to WAIT_DATA");
+            let requested = False;
+            let len = 0;
+            if (!is_last || (!last_over_55 && !last_is_64)) begin
+                len = is_last ? zeroExtend (len_bottom_bits) : 64;
+                //let len = is_last && !last_is_full ? zeroExtend (len_bottom_bits) : 64;
+                //let len = is_last && !last_over_55 ? zeroExtend (len_bottom_bits)
+                //        : is_last &&  last_over_55 ? 0
+                //        : is_second_last &&  last_over_55 ? zeroExtend (len_bottom_bits)
+                //        //: is_second_last && !last_over_55 ? 64
+                //        : 64;
+                Data_Mover_Req #(m_addr_, bram_addr_sz_) dm_req
+                    = Data_Mover_Req { bus_addr  : regs.data_ptr + (rg_data_chunks_read << log2 (64))
+                                     , bram_addr : 0
+                                     , dir       : BUS2BRAM
+                                     , len       : len};
+                rw_data_mover_req.wset (dm_req);
+                if (rg_verbosity > 0) begin
+                    $display ("    dm_req: ", fshow (dm_req));
+                    $display ("    going to WAIT_DATA");
+                end
+                requested = True;
             end
-            rg_state <= WAIT_READ;
+            // TODO
+            rg_state <= requested ? WAIT_READ : REQ_HASH;
             rg_chunk_len <= len;
             rg_chunk_is_last <= is_last;
+            rg_chunk_pad_one <= (is_last && (last_is_64 || !rg_chunks_need_extra))
+                                 || (is_second_last && rg_chunks_need_extra && !last_is_64);
             rg_chunk_is_first <= rg_chunks_done == 0;
-            rg_state_next <= REQ_DATA;
         end
     endrule
 
     rule rl_wait_read (rg_state == WAIT_READ
-                       && src_data_mover.canPeek);
+                       && src_data_mover.canPeek
+                       && sha256_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_read");
         end
@@ -218,7 +307,28 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                          , len        : zeroExtend (rg_chunk_len)
                          , reset_hash : rg_chunk_is_first
                          , pad_zeroes : rg_chunk_is_last
-                         , pad_one    : rg_chunk_is_last
+                         , pad_one    : rg_chunk_pad_one
+                         , append_len : rg_chunk_is_last};
+        rw_sha256_req.wset (sha_req);
+        if (rg_verbosity > 0) begin
+            $display ("    sha_req: ", fshow (sha_req));
+            $display ("    going to WAIT_HASH");
+        end
+
+        rg_state <= WAIT_HASH;
+    endrule
+
+    rule rl_req_hash (rg_state == REQ_HASH
+                      && sha256_is_ready);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_req_hash");
+        end
+        SHA256_Req #(bram_addr_sz_) sha_req
+            = SHA256_Req { bram_addr  : 0
+                         , len        : zeroExtend (rg_chunk_len)
+                         , reset_hash : rg_chunk_is_first
+                         , pad_zeroes : rg_chunk_is_last
+                         , pad_one    : rg_chunk_pad_one
                          , append_len : rg_chunk_is_last};
         rw_sha256_req.wset (sha_req);
         if (rg_verbosity > 0) begin
@@ -232,17 +342,17 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     rule rl_wait_hash (rg_state == WAIT_HASH
                        && src_sha256.canPeek);
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto Controller rl_wait_read");
+            $display ("%m HWCrypto Controller rl_wait_hash");
         end
         src_sha256.drop;
-        rg_state <= rg_state_next;
+        rg_state <= CONTINUE_WITH_DATA;
         rg_chunks_done <= rg_chunks_done + 1;
     endrule
 
     rule rl_wait_data (rg_state == WAIT_DATA
                        && src_data_mover.canPeek);
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto Controller rl_req_data");
+            $display ("%m HWCrypto Controller rl_wait_data");
         end
         src_data_mover.drop;
 
@@ -261,11 +371,79 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         rg_state <= WAIT_HASH;
     endrule
 
+    rule rl_copy_hash_to_data_bram (rg_state == COPY_HASH
+                                    && hash_copy_is_ready);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_copy_hash_to_data_bram");
+        end
+        dw_run_hash_copy <= True;
+        rg_state <= WAIT_COPY_HASH;
+    endrule
+
+    Reg #(Bool) rg_key_hash_req <- mkRegU;
+    Reg #(Bool) rg_key_hash_done <- mkRegU;
+    Reg #(Bool) rg_data_hash_done <- mkRegU;
+    rule rl_wait_copy_hash (rg_state == WAIT_COPY_HASH
+                            && src_hash_copy.canPeek);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_wait_copy_hash");
+        end
+        src_hash_copy.drop;
+        rg_state <= OUTER_HASH;
+        rg_bram_index <= 0;
+        rg_key_hash_done <= False;
+        rg_data_hash_done <= False;
+        rw_key_xor_ctrl.wset (fn_replicate_byte ('h5c));
+    endrule
+
+    rule rl_outer_hash (rg_state == OUTER_HASH
+                        && sha256_is_ready);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_outer_hash");
+            $display ("    rg_key_hash_req: ", fshow (rg_key_hash_req));
+            $display ("    rg_key_hash_done: ", fshow (rg_key_hash_done));
+            $display ("    rg_data_hash_done: ", fshow (rg_data_hash_done));
+        end
+        if (!rg_key_hash_req) begin
+            $display ("    case 1");
+            rg_key_hash_req <= True;
+            SHA256_Req #(bram_addr_sz_) sha_req
+                = SHA256_Req { bram_addr  : 0
+                             , len        : 64
+                             , reset_hash : True
+                             , pad_zeroes : False
+                             , pad_one    : False
+                             , append_len : False};
+            rw_sha256_req.wset (sha_req);
+        end else if (rg_key_hash_req && !rg_key_hash_done && src_sha256.canPeek) begin
+            $display ("    case 2");
+            rg_bram_index <= 1;
+            rg_key_hash_done <= True;
+        end else if (rg_key_hash_done && !rg_data_hash_done && src_sha256.canPeek) begin
+            $display ("    case 3");
+            src_sha256.drop;
+            rg_data_hash_done <= True;
+            SHA256_Req #(bram_addr_sz_) sha_req
+                = SHA256_Req { bram_addr  : 0
+                             , len        : 32
+                             , reset_hash : False
+                             , pad_zeroes : True
+                             , pad_one    : True
+                             , append_len : True};
+            rw_sha256_req.wset (sha_req);
+        end else if (rg_key_hash_done && rg_data_hash_done && src_sha256.canPeek) begin
+            $display ("    case 4");
+            src_sha256.drop;
+            rg_state <= FINISH;
+        end
+    endrule
+
     method data_mover_req = rw_data_mover_req.wget;
     method sha256_req = rw_sha256_req.wget;
     method key_pad_ctrl = rw_key_pad_ctrl.wget;
     method key_xor_ctrl = rw_key_xor_ctrl.wget;
     method bram_index = rg_bram_index;
+    method run_hash_copy = dw_run_hash_copy;
 
     method Action set_verbosity (Bit #(4) new_verb);
         rg_verbosity <= new_verb;
