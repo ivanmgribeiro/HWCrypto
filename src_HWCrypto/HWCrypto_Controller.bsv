@@ -148,11 +148,13 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         end
 
         SHA256_Req #(bram_addr_sz_) sha_req
-            = SHA256_Req { bram_addr : 0
-                         , len       : truncate (regs.key_len)
-                         , is_first  : True
+            = SHA256_Req { bram_addr  : 0
+                         , len        : truncate (regs.key_len)
+                         , reset_hash : True
                          // TODO change this
-                         , is_last   : True};
+                         , pad_zeroes : True
+                         , pad_one    : True
+                         , append_len : True};
         rw_sha256_req.wset (sha_req);
         if (rg_verbosity > 0) begin
             $display ("    sha_req: ", fshow (sha_req));
@@ -212,10 +214,12 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         end
         src_data_mover.drop;
         SHA256_Req #(bram_addr_sz_) sha_req
-            = SHA256_Req { bram_addr : 0
-                         , len       : zeroExtend (rg_chunk_len)
-                         , is_first  : rg_chunk_is_first
-                         , is_last   : rg_chunk_is_last};
+            = SHA256_Req { bram_addr  : 0
+                         , len        : zeroExtend (rg_chunk_len)
+                         , reset_hash : rg_chunk_is_first
+                         , pad_zeroes : rg_chunk_is_last
+                         , pad_one    : rg_chunk_is_last
+                         , append_len : rg_chunk_is_last};
         rw_sha256_req.wset (sha_req);
         if (rg_verbosity > 0) begin
             $display ("    sha_req: ", fshow (sha_req));
@@ -243,10 +247,12 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         src_data_mover.drop;
 
         SHA256_Req #(bram_addr_sz_) sha_req
-            = SHA256_Req { bram_addr : 0
-                         , len       : truncate (regs.data_len)
-                         , is_first  : True
-                         , is_last   : True};
+            = SHA256_Req { bram_addr  : 0
+                         , len        : truncate (regs.data_len)
+                         , reset_hash : True
+                         , pad_zeroes : True
+                         , pad_one    : True
+                         , append_len : True};
         rw_sha256_req.wset (sha_req);
         if (rg_verbosity > 0) begin
             $display ("    sha_req: ", fshow (sha_req));
