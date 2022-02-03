@@ -149,6 +149,7 @@ module mkCopy_Hash_To_BRAM #( Vector #(n_, Bit #(rg_sz_)) v_rg_data
         if (rg_ctr >= fromInteger (valueOf (n_))) begin
             rg_started <= False;
             snk.put (?);
+            rg_ctr <= 0;
         end else begin
             Bit #(data_sz_) to_write = 0;
             // data written needs to be reversed so that it is in the right order
@@ -158,8 +159,8 @@ module mkCopy_Hash_To_BRAM #( Vector #(n_, Bit #(rg_sz_)) v_rg_data
                 to_write = to_write | (zeroExtend (v_rg_data[rg_ctr + fromInteger (i)]) << (valueOf (rg_sz_) * (valueOf (rg_in_data_) - i - 1)));
             end
             bram.put (True, zeroExtend (rg_ctr >> log2 (valueOf (rg_in_data_))), fn_rev_byte_order (to_write));
+            rg_ctr <= rg_ctr + fromInteger (valueOf (rg_in_data_));
         end
-        rg_ctr <= rg_ctr + fromInteger (valueOf (rg_in_data_));
     endrule
     method is_ready = !rg_started;
 endmodule
