@@ -165,4 +165,75 @@ module mkCopy_Hash_To_BRAM #( Vector #(n_, Bit #(rg_sz_)) v_rg_data
     method is_ready = !rg_started;
 endmodule
 
+interface Multi_Push_Stack_IFC #(type data_, numeric type n_push_);
+    interface Vector #(n_push_, Sink #(data_)) put_port;
+    interface Source #(data_) pop_port;
+    method Action print_state;
+    method Action reset;
+endinterface
+
+// This module DOES NOT CHECK that what you are doing makes sense, and just
+// assumes that it makes sense
+// put_port[n_push-1] gets popped first
+module mkMulti_Push_Stack #(parameter data_ init)
+                           (Multi_Push_Stack_IFC #(data_, n_push))
+                           provisos (Bits #(data_, data_sz_)
+                                    , Add#(a__, TLog#(n_push), TLog#(TAdd#(n_push, 1)))
+                                    , FShow #(data_));
+    Vector #(n_push, Reg #(data_)) v_rg <- replicateM (mkReg(init));
+    Reg #(Bit #(TLog #(TAdd #(n_push, 1)))) rg_ctr <- mkReg (1);
+    Wire #(Bool) dw_popped <- mkDWire (False);
+    Vector #(n_push, RWire #(data_)) v_rw_pushes <- replicateM (mkRWire);
+
+    Vector #(n_push, Sink #(data_)) v_sinks = newVector;
+    for (Integer i = 0; i < valueOf (n_push); i = i+1) begin
+        v_sinks[i] = (interface Sink
+                          // TODO
+                          method Bool canPut = True;
+                          method Action put (data_ data);
+                              v_rw_pushes[i].wset (data);
+                          endmethod
+                      endinterface);
+    end
+
+    rule rl_always;
+        Vector #(n_push, data_) to_write = readVReg (v_rg);
+        Bit #(TLog #(TAdd #(n_push, 1))) start = rg_ctr;
+        if (dw_popped) begin
+            start = start - 1;
+        end
+        for (Integer i = 0; i < valueOf (n_push); i = i+1) begin
+            if (isValid (v_rw_pushes[i].wget)) begin
+                Bit #(TLog #(n_push)) idx = truncate (start);
+                to_write[idx] = v_rw_pushes[i].wget.Valid;
+                start = start + 1;
+            end
+        end
+        for (Integer i = 0; i < valueOf (n_push); i = i+1) begin
+            v_rg[i] <= to_write[i];
+        end
+        rg_ctr <= start;
+    endrule
+
+    interface Source pop_port;
+        method Bool canPeek = rg_ctr > 0;
+        method data_ peek = v_rg[rg_ctr-1];
+        method Action drop;
+            dw_popped <= True;
+        endmethod
+    endinterface
+
+    interface put_port = v_sinks;
+
+    method Action reset;
+        rg_ctr <= 0;
+    endmethod
+
+    method Action print_state;
+        $display ( "    Multi_Push_Stack state -"
+                 , "  rg_ctr: ", fshow (rg_ctr)
+                 , "  v_rg: ", fshow (readVReg (v_rg)));
+    endmethod
+endmodule
+
 endpackage

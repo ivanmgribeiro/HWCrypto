@@ -1,6 +1,7 @@
 package HWCrypto_Controller;
 
 import HWCrypto_Types :: *;
+import HWCrypto_Utils :: *;
 import RWire :: *;
 import SourceSink :: *;
 
@@ -65,6 +66,14 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                                        , Mul#(b__, 8, bram_data_sz_)
                                        , Add#(c__, 8, TMul#(b__, 8)));
 
+    Multi_Push_Stack_IFC #(State, 3) stack_state <- mkMulti_Push_Stack (IDLE);
+    rule rl_debug_stack_state;
+        if (!stack_state.pop_port.canPeek) begin
+            $display ("HWCrypto Controller ERROR: SOMETHING HAS GONE VERY WRONG");
+            $display ("    RAN OUT OF STATES IN THE STACK");
+        end
+    endrule
+
     Reg #(State) rg_state <- mkReg (IDLE);
     Reg #(State) rg_state_next <- mkRegU;
     Reg #(Bit #(8)) rg_replicate_byte <- mkRegU;
@@ -100,31 +109,41 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         return res;
     endfunction
 
-    rule rl_handle_reg_trigger (rg_state == IDLE
+    rule rl_handle_reg_trigger (stack_state.pop_port.canPeek
+                                && stack_state.pop_port.peek == IDLE
                                 && src_reg_trigger.canPeek);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_handle_reg_trigger");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
         end
         // keys longer than 64 bytes (block size) need to be hashed
         if (regs.key_len > 64) begin
             if (rg_verbosity > 0) begin
                 $display ("    going to REQ_KEY_LONG");
             end
-            rg_state <= REQ_KEY_LONG;
+            stack_state.pop_port.drop;
+            stack_state.put_port[0].put (REQ_KEY_LONG);
         end else begin
             if (rg_verbosity > 0) begin
                 $display ("    going to REQ_KEY_SHORT");
             end
-            rg_state <= REQ_KEY_SHORT;
+            stack_state.pop_port.drop;
+            stack_state.put_port[0].put (REQ_KEY_SHORT);
         end
         rg_bram_index <= 0;
         rg_chunks_done <= 0;
     endrule
 
-    rule rl_req_key_short (rg_state == REQ_KEY_SHORT
-                             && data_mover_is_ready);
+    rule rl_req_key_short (stack_state.pop_port.canPeek
+                           && stack_state.pop_port.peek == REQ_KEY_SHORT
+                           && data_mover_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_req_key_short");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
         end
         Data_Mover_Req #(m_addr_, bram_addr_sz_) dm_req
             = Data_Mover_Req { bus_addr  : regs.key_ptr
@@ -132,17 +151,22 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                              , dir       : BUS2BRAM
                              , len       : regs.key_len};
         rw_data_mover_req.wset (dm_req);
-        rg_state <= WAIT_KEY_SHORT;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (WAIT_KEY_SHORT);
         if (rg_verbosity > 0) begin
             $display ("    dm_req: ", fshow (dm_req));
             $display ("    going to WAIT_KEY_SHORT");
         end
     endrule
 
-    rule rl_wait_key_short (rg_state == WAIT_KEY_SHORT
+    rule rl_wait_key_short (stack_state.pop_port.canPeek
+                            && stack_state.pop_port.peek == WAIT_KEY_SHORT
                             && src_data_mover.canPeek);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_key_short");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
         end
         src_data_mover.drop;
         // now need to prep key
@@ -159,13 +183,18 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         end
         rw_key_xor_ctrl.wset (fn_replicate_byte ('h36));
 
-        rg_state <= START_INNER_HASH;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (START_INNER_HASH);
     endrule
 
-    rule rl_hash_key_req (rg_state == HASH_KEY_REQ
+    rule rl_hash_key_req (stack_state.pop_port.canPeek
+                          && stack_state.pop_port.peek == HASH_KEY_REQ
                           && sha256_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_hash_key_req");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
         end
 
         SHA256_Req #(bram_addr_sz_) sha_req
@@ -181,15 +210,20 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             $display ("    sha_req: ", fshow (sha_req));
             $display ("    going to WAIT_HASH");
         end
-        rg_state <= WAIT_HASH;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (WAIT_HASH);
     endrule
 
 
     // start the inner hash by hashing what is in the key bram
-    rule rl_start_inner_hash (rg_state == START_INNER_HASH
+    rule rl_start_inner_hash (stack_state.pop_port.canPeek
+                              && stack_state.pop_port.peek == START_INNER_HASH
                               && sha256_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_start_inner_hash");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
         end
         SHA256_Req #(bram_addr_sz_) sha_req
             = SHA256_Req { bram_addr  : 0
@@ -199,20 +233,27 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                          , pad_zeroes : False
                          , append_len : False};
         rw_sha256_req.wset (sha_req);
-        rg_state <= CONTINUE_INNER_HASH;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (CONTINUE_INNER_HASH);
     endrule
 
     // set up for fetching data from memory to the data bram and hashing it
-    rule rl_continue_inner_hash (rg_state == CONTINUE_INNER_HASH
+    rule rl_continue_inner_hash (stack_state.pop_port.canPeek
+                                 && stack_state.pop_port.peek == CONTINUE_INNER_HASH
                                  && src_sha256.canPeek);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_continue_inner_hash");
         end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
+        end
         src_sha256.drop;
 
         rg_bram_index <= 1;
-        rg_state <= CONTINUE_WITH_DATA;
-        rg_state_next <= COPY_HASH;
+        stack_state.pop_port.drop;
+        stack_state.put_port[2].put (CONTINUE_WITH_DATA);
+        stack_state.put_port[1].put (COPY_HASH);
+        stack_state.put_port[0].put (OUTER_HASH);
         rg_bram_index_next <= 0;
         rg_replicate_byte <= 'h5c;
         let total_len = regs.data_len + 64;
@@ -239,10 +280,14 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     endrule
 
     // continue the inner hash by fetching data and hashing it
-    rule rl_continue_hash_with_data (rg_state == CONTINUE_WITH_DATA
+    rule rl_continue_hash_with_data (stack_state.pop_port.canPeek
+                                     && stack_state.pop_port.peek == CONTINUE_WITH_DATA
                                      && data_mover_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_continue_hash_with_data");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
         end
         // find the number of 64byte chunks that we will need
         Bit #(TLog #(64)) len_bottom_bits = truncate (rg_hash_total_len);
@@ -258,12 +303,9 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         end
 
         if (rg_chunks_done == num_chunks) begin
-            // we are done
-            rg_state <= rg_state_next;
-            rg_state_next <= OUTER_HASH;
+            stack_state.pop_port.drop;
             if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto Controller data hash finished");
-            $display ("    going to ", fshow (rg_state_next));
+                $display ("%m HWCrypto Controller data hash finished");
             end
         end else begin
             let is_last = rg_chunks_done == num_chunks - 1;
@@ -292,7 +334,8 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                 requested = True;
             end
             // TODO
-            rg_state <= requested ? WAIT_READ : REQ_HASH;
+            stack_state.pop_port.drop;
+            stack_state.put_port[0].put (requested ? WAIT_READ : REQ_HASH);
             rg_chunk_len <= len;
             rg_chunk_is_last <= is_last;
             rg_chunk_pad_one <= (is_last && (last_is_64 || !rg_chunks_need_extra))
@@ -302,11 +345,15 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     endrule
 
 
-    rule rl_wait_read (rg_state == WAIT_READ
+    rule rl_wait_read (stack_state.pop_port.canPeek
+                       && stack_state.pop_port.peek == WAIT_READ
                        && src_data_mover.canPeek
                        && sha256_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_read");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
         end
         src_data_mover.drop;
         SHA256_Req #(bram_addr_sz_) sha_req
@@ -322,13 +369,18 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             $display ("    going to WAIT_HASH");
         end
 
-        rg_state <= WAIT_HASH;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (WAIT_HASH);
     endrule
 
-    rule rl_req_hash (rg_state == REQ_HASH
+    rule rl_req_hash (stack_state.pop_port.canPeek
+                      && stack_state.pop_port.peek == REQ_HASH
                       && sha256_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_req_hash");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
         end
         SHA256_Req #(bram_addr_sz_) sha_req
             = SHA256_Req { bram_addr  : 0
@@ -343,23 +395,33 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             $display ("    going to WAIT_HASH");
         end
 
-        rg_state <= WAIT_HASH;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (WAIT_HASH);
     endrule
 
-    rule rl_wait_hash (rg_state == WAIT_HASH
+    rule rl_wait_hash (stack_state.pop_port.canPeek
+                       && stack_state.pop_port.peek == WAIT_HASH
                        && src_sha256.canPeek);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_hash");
         end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
+        end
         src_sha256.drop;
-        rg_state <= CONTINUE_WITH_DATA;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (CONTINUE_WITH_DATA);
         rg_chunks_done <= rg_chunks_done + 1;
     endrule
 
-    rule rl_wait_data (rg_state == WAIT_DATA
+    rule rl_wait_data (stack_state.pop_port.canPeek
+                       && stack_state.pop_port.peek == WAIT_DATA
                        && src_data_mover.canPeek);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_data");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
         end
         src_data_mover.drop;
 
@@ -375,41 +437,55 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             $display ("    sha_req: ", fshow (sha_req));
             $display ("    going to WAIT_HASH");
         end
-        rg_state <= WAIT_HASH;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (WAIT_HASH);
     endrule
 
-    rule rl_copy_hash_to_data_bram (rg_state == COPY_HASH
+    rule rl_copy_hash_to_data_bram (stack_state.pop_port.canPeek
+                                    && stack_state.pop_port.peek == COPY_HASH
                                     && hash_copy_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_copy_hash_to_data_bram");
         end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
+        end
         dw_run_hash_copy <= True;
-        rg_state <= WAIT_COPY_HASH;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (WAIT_COPY_HASH);
     endrule
 
     Reg #(Bool) rg_key_hash_req <- mkRegU;
     Reg #(Bool) rg_key_hash_done <- mkRegU;
     Reg #(Bool) rg_data_hash_done <- mkRegU;
-    rule rl_wait_copy_hash (rg_state == WAIT_COPY_HASH
+    rule rl_wait_copy_hash (stack_state.pop_port.canPeek
+                            && stack_state.pop_port.peek == WAIT_COPY_HASH
                             && src_hash_copy.canPeek);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_copy_hash");
         end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
+        end
         src_hash_copy.drop;
-        rg_state <= rg_state_next;
         rg_bram_index <= rg_bram_index_next;
         rg_key_hash_done <= False;
         rg_data_hash_done <= False;
         rw_key_xor_ctrl.wset (fn_replicate_byte (rg_replicate_byte));
+        stack_state.pop_port.drop;
     endrule
 
-    rule rl_outer_hash (rg_state == OUTER_HASH
+    rule rl_outer_hash (stack_state.pop_port.canPeek
+                        && stack_state.pop_port.peek == OUTER_HASH
                         && sha256_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_outer_hash");
             $display ("    rg_key_hash_req: ", fshow (rg_key_hash_req));
             $display ("    rg_key_hash_done: ", fshow (rg_key_hash_done));
             $display ("    rg_data_hash_done: ", fshow (rg_data_hash_done));
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
         end
         if (!rg_key_hash_req) begin
             $display ("    case 1");
@@ -441,17 +517,22 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         end else if (rg_key_hash_done && rg_data_hash_done && src_sha256.canPeek) begin
             $display ("    case 4");
             src_sha256.drop;
-            rg_state <= COPY_HASH;
             rg_replicate_byte <= 0;
             rg_bram_index_next <= 1;
-            rg_state_next <= WRITE_BACK;
+            stack_state.pop_port.drop;
+            stack_state.put_port[1].put (COPY_HASH);
+            stack_state.put_port[0].put (WRITE_BACK);
         end
     endrule
 
-    rule rl_write_back_to_mem (rg_state == WRITE_BACK
+    rule rl_write_back_to_mem (stack_state.pop_port.canPeek
+                               && stack_state.pop_port.peek == WRITE_BACK
                                && data_mover_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_write_back_to_mem");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
         end
         Data_Mover_Req #(m_addr_, bram_addr_sz_) dm_req
             = Data_Mover_Req { bus_addr  : regs.dest_ptr
@@ -459,16 +540,22 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                              , dir       : BRAM2BUS
                              , len       : 32};
         rw_data_mover_req.wset (dm_req);
-        rg_state <= WAIT_WRITE_BACK;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (WAIT_WRITE_BACK);
     endrule
 
-    rule rl_wait_write_back (rg_state == WAIT_WRITE_BACK
+    rule rl_wait_write_back (stack_state.pop_port.canPeek
+                             && stack_state.pop_port.peek == WAIT_WRITE_BACK
                              && src_data_mover.canPeek);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_write_back");
         end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
+        end
         src_data_mover.drop;
-        rg_state <= FINISH;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (FINISH);
     endrule
 
 
