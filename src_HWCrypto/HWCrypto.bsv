@@ -92,7 +92,7 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
 
     HWCrypto_Data_Mover_IFC #(`MPARAMS, 32) data_mover <- mkHWCrypto_Data_Mover (bram.a, toSink (fifo_copy_end));
     HWCrypto_SHA256_IFC #(32) sha256 <- mkHWCrypto_SHA256 (bram.b, toSink (fifo_sha256_end));
-    let hash_copy <- mkCopy_Hash_To_BRAM (sha256.hash_regs, data_bram.a, dw_run_hash_copy, toSink (fifo_hash_copy_end));
+    let hash_copy <- mkCopy_Hash_To_BRAM (sha256.hash_regs, bram.a, dw_run_hash_copy, toSink (fifo_hash_copy_end));
     HWCrypto_Controller_IFC #(m_addr_, 32, m_data_, 2) controller
         <- mkHWCrypto_Controller ( toSource (fifo_reg_trigger)
                                  , data_mover.is_ready

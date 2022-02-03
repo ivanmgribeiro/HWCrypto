@@ -22,6 +22,8 @@ typedef enum {
     COPY_HASH,
     WAIT_COPY_HASH,
     OUTER_HASH,
+    WRITE_BACK,
+    WAIT_WRITE_BACK,
     FINISH
 } State deriving (Bits, Eq, FShow);
 
@@ -65,6 +67,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     Reg #(State) rg_state <- mkReg (IDLE);
     Reg #(State) rg_state_next <- mkRegU;
+    Reg #(Bit #(8)) rg_replicate_byte <- mkRegU;
     Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
     Reg #(Bit #(64)) rg_hash_chunk_ctr <- mkReg (0);
     Reg #(Bit #(TLog #(n_brams_))) rg_bram_index <- mkReg (0);
@@ -182,6 +185,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     endrule
 
 
+    // start the inner hash by hashing what is in the key bram
     rule rl_start_inner_hash (rg_state == START_INNER_HASH
                               && sha256_is_ready);
         if (rg_verbosity > 0) begin
@@ -198,6 +202,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         rg_state <= CONTINUE_INNER_HASH;
     endrule
 
+    // set up for fetching data from memory to the data bram and hashing it
     rule rl_continue_inner_hash (rg_state == CONTINUE_INNER_HASH
                                  && src_sha256.canPeek);
         if (rg_verbosity > 0) begin
@@ -207,7 +212,9 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
         rg_bram_index <= 1;
         rg_state <= CONTINUE_WITH_DATA;
-        rg_state_next <= COPY_HASH; // TODO
+        rg_state_next <= COPY_HASH;
+        rg_bram_index_next <= 0;
+        rg_replicate_byte <= 'h5c;
         let total_len = regs.data_len + 64;
         rg_hash_total_len <= total_len;
         rg_hash_ptr <= regs.data_ptr;
@@ -231,9 +238,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         end
     endrule
 
-
-
-
+    // continue the inner hash by fetching data and hashing it
     rule rl_continue_hash_with_data (rg_state == CONTINUE_WITH_DATA
                                      && data_mover_is_ready);
         if (rg_verbosity > 0) begin
@@ -255,6 +260,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         if (rg_chunks_done == num_chunks) begin
             // we are done
             rg_state <= rg_state_next;
+            rg_state_next <= OUTER_HASH;
             if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller data hash finished");
             $display ("    going to ", fshow (rg_state_next));
@@ -294,6 +300,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             rg_chunk_is_first <= rg_chunks_done == 0;
         end
     endrule
+
 
     rule rl_wait_read (rg_state == WAIT_READ
                        && src_data_mover.canPeek
@@ -389,11 +396,11 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             $display ("%m HWCrypto Controller rl_wait_copy_hash");
         end
         src_hash_copy.drop;
-        rg_state <= OUTER_HASH;
-        rg_bram_index <= 0;
+        rg_state <= rg_state_next;
+        rg_bram_index <= rg_bram_index_next;
         rg_key_hash_done <= False;
         rg_data_hash_done <= False;
-        rw_key_xor_ctrl.wset (fn_replicate_byte ('h5c));
+        rw_key_xor_ctrl.wset (fn_replicate_byte (rg_replicate_byte));
     endrule
 
     rule rl_outer_hash (rg_state == OUTER_HASH
@@ -434,9 +441,36 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         end else if (rg_key_hash_done && rg_data_hash_done && src_sha256.canPeek) begin
             $display ("    case 4");
             src_sha256.drop;
-            rg_state <= FINISH;
+            rg_state <= COPY_HASH;
+            rg_replicate_byte <= 0;
+            rg_bram_index_next <= 1;
+            rg_state_next <= WRITE_BACK;
         end
     endrule
+
+    rule rl_write_back_to_mem (rg_state == WRITE_BACK
+                               && data_mover_is_ready);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_write_back_to_mem");
+        end
+        Data_Mover_Req #(m_addr_, bram_addr_sz_) dm_req
+            = Data_Mover_Req { bus_addr  : regs.dest_ptr
+                             , bram_addr : 0
+                             , dir       : BRAM2BUS
+                             , len       : 32};
+        rw_data_mover_req.wset (dm_req);
+        rg_state <= WAIT_WRITE_BACK;
+    endrule
+
+    rule rl_wait_write_back (rg_state == WAIT_WRITE_BACK
+                             && src_data_mover.canPeek);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_wait_write_back");
+        end
+        src_data_mover.drop;
+        rg_state <= FINISH;
+    endrule
+
 
     method data_mover_req = rw_data_mover_req.wget;
     method sha256_req = rw_sha256_req.wget;
