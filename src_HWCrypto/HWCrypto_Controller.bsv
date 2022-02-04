@@ -181,8 +181,49 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             // down to a 32 byte key
             rw_key_pad_ctrl.wset (tuple2 (True, 32));
         end
-        rw_key_xor_ctrl.wset (fn_replicate_byte ('h36));
 
+        rw_key_xor_ctrl.wset (fn_replicate_byte ('h36));
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (START_INNER_HASH);
+    endrule
+
+    rule rl_req_key_long (stack_state.pop_port.canPeek
+                          && stack_state.pop_port.peek == REQ_KEY_LONG);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_hash_key_req");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
+        end
+        rg_hash_total_len <= regs.key_len;
+        rg_hash_ptr <= regs.key_ptr;
+        rg_chunks_done <= 0;
+        rg_data_chunks_read <= 0;
+        Bit #(TLog #(64)) len_bottom_bits = truncate (regs.data_len);
+        let last_over_55 = len_bottom_bits > 55;
+        rg_chunks_total <= (regs.key_len >> (log2 (64))) + (last_over_55 ? 2 : 1);
+
+        if (rg_verbosity > 0) begin
+            $display ( "    total_len: ", fshow (regs.key_len)
+                     , "  len_bottom_bits: ", fshow (len_bottom_bits));
+        end
+
+        stack_state.pop_port.drop;
+        stack_state.put_port[2].put (CONTINUE_WITH_DATA);
+        stack_state.put_port[1].put (COPY_HASH);
+        stack_state.put_port[0].put (WAIT_KEY_LONG);
+    endrule
+
+    rule rl_wait_req_key_long (stack_state.pop_port.canPeek
+                               && stack_state.pop_port.peek == WAIT_KEY_LONG);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_hash_key_req");
+        end
+        if (rg_verbosity > 1) begin
+            stack_state.print_state;
+        end
+        rw_key_pad_ctrl.wset (tuple2 (True, 32));
+        rw_key_xor_ctrl.wset (fn_replicate_byte ('h36));
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (START_INNER_HASH);
     endrule
