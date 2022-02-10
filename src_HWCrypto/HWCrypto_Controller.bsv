@@ -93,7 +93,6 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     Reg #(Bit #(64)) rg_chunks_total <- mkRegU;
     Reg #(Bit #(TAdd #(TLog #(64), 1))) rg_chunk_len <- mkRegU;
     Reg #(Bit #(64)) rg_hash_total_len <- mkRegU;
-    Reg #(Bool) rg_chunks_need_extra <- mkRegU;
     Reg #(Bool) rg_chunk_is_first <- mkRegU;
     Reg #(Bool) rg_chunk_is_last <- mkRegU;
     Reg #(Bool) rg_chunk_pad_one <- mkRegU;
@@ -133,6 +132,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             stack_state.put_port[0].put (REQ_KEY_SHORT);
         end
         rg_bram_index <= 0;
+        rg_bram_index_next <= 0;
         rg_chunks_done <= 0;
     endrule
 
@@ -190,7 +190,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     rule rl_req_key_long (stack_state.pop_port.canPeek
                           && stack_state.pop_port.peek == REQ_KEY_LONG);
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto Controller rl_hash_key_req");
+            $display ("%m HWCrypto Controller rl_req_key_long");
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
@@ -199,7 +199,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         rg_hash_ptr <= regs.key_ptr;
         rg_chunks_done <= 0;
         rg_data_chunks_read <= 0;
-        Bit #(TLog #(64)) len_bottom_bits = truncate (regs.data_len);
+        Bit #(TLog #(64)) len_bottom_bits = truncate (regs.key_len);
         let last_over_55 = len_bottom_bits > 55;
         rg_chunks_total <= (regs.key_len >> (log2 (64))) + (last_over_55 ? 2 : 1);
 
@@ -207,6 +207,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             $display ( "    total_len: ", fshow (regs.key_len)
                      , "  len_bottom_bits: ", fshow (len_bottom_bits));
         end
+        rw_key_pad_ctrl.wset (tuple2 (False, ?));
 
         stack_state.pop_port.drop;
         stack_state.put_port[2].put (CONTINUE_WITH_DATA);
@@ -217,7 +218,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     rule rl_wait_req_key_long (stack_state.pop_port.canPeek
                                && stack_state.pop_port.peek == WAIT_KEY_LONG);
         if (rg_verbosity > 0) begin
-            $display ("%m HWCrypto Controller rl_hash_key_req");
+            $display ("%m HWCrypto Controller rl_wait_req_key_long");
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
@@ -271,7 +272,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                          , len        : 64
                          , reset_hash : True
                          , pad_one    : False
-                         , pad_zeroes : False
+                         , pad_zeroes : True
                          , append_len : False};
         rw_sha256_req.wset (sha_req);
         stack_state.pop_port.drop;
@@ -355,15 +356,12 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             let requested = False;
             let len = 0;
             if (!is_last || (!last_over_55 && !last_is_64)) begin
-                len = is_last ? zeroExtend (len_bottom_bits) : 64;
-                //let len = is_last && !last_is_full ? zeroExtend (len_bottom_bits) : 64;
-                //let len = is_last && !last_over_55 ? zeroExtend (len_bottom_bits)
-                //        : is_last &&  last_over_55 ? 0
-                //        : is_second_last &&  last_over_55 ? zeroExtend (len_bottom_bits)
-                //        //: is_second_last && !last_over_55 ? 64
-                //        : 64;
+                len = is_last && !last_over_55 ? zeroExtend (len_bottom_bits)
+                    : is_last &&  last_over_55 ? 0
+                    : is_second_last &&  last_over_55 ? zeroExtend (len_bottom_bits)
+                    : 64;
                 Data_Mover_Req #(m_addr_, bram_addr_sz_) dm_req
-                    = Data_Mover_Req { bus_addr  : regs.data_ptr + (rg_data_chunks_read << log2 (64))
+                    = Data_Mover_Req { bus_addr  : rg_hash_ptr + (rg_data_chunks_read << log2 (64))
                                      , bram_addr : 0
                                      , dir       : BUS2BRAM
                                      , len       : len};
@@ -379,9 +377,10 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             stack_state.put_port[0].put (requested ? WAIT_READ : REQ_HASH);
             rg_chunk_len <= len;
             rg_chunk_is_last <= is_last;
-            rg_chunk_pad_one <= (is_last && (last_is_64 || !rg_chunks_need_extra))
-                                 || (is_second_last && rg_chunks_need_extra && !last_is_64);
+            rg_chunk_pad_one <= (is_last && !last_over_55)
+                                 || (is_second_last && last_over_55);
             rg_chunk_is_first <= rg_chunks_done == 0;
+            rg_data_chunks_read <= rg_data_chunks_read + 1;
         end
     endrule
 
@@ -401,7 +400,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             = SHA256_Req { bram_addr  : 0
                          , len        : zeroExtend (rg_chunk_len)
                          , reset_hash : rg_chunk_is_first
-                         , pad_zeroes : rg_chunk_is_last
+                         , pad_zeroes : True
                          , pad_one    : rg_chunk_pad_one
                          , append_len : rg_chunk_is_last};
         rw_sha256_req.wset (sha_req);
@@ -427,7 +426,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             = SHA256_Req { bram_addr  : 0
                          , len        : zeroExtend (rg_chunk_len)
                          , reset_hash : rg_chunk_is_first
-                         , pad_zeroes : rg_chunk_is_last
+                         , pad_zeroes : True
                          , pad_one    : rg_chunk_pad_one
                          , append_len : rg_chunk_is_last};
         rw_sha256_req.wset (sha_req);
@@ -510,6 +509,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         end
         src_hash_copy.drop;
         rg_bram_index <= rg_bram_index_next;
+        rg_key_hash_req <= False;
         rg_key_hash_done <= False;
         rg_data_hash_done <= False;
         rw_key_xor_ctrl.wset (fn_replicate_byte (rg_replicate_byte));
@@ -535,7 +535,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                 = SHA256_Req { bram_addr  : 0
                              , len        : 64
                              , reset_hash : True
-                             , pad_zeroes : False
+                             , pad_zeroes : True
                              , pad_one    : False
                              , append_len : False};
             rw_sha256_req.wset (sha_req);
@@ -597,6 +597,16 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         src_data_mover.drop;
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (FINISH);
+    endrule
+
+    rule rl_finish (stack_state.pop_port.canPeek
+                    && stack_state.pop_port.peek == FINISH);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_finish");
+        end
+        src_reg_trigger.drop;
+        stack_state.pop_port.drop;
+        stack_state.put_port[0].put (IDLE);
     endrule
 
 

@@ -337,7 +337,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
             // make the maximum-sized request we can make
             let max_req_size = fn_max_size (rg_bytes_left);
             awflit.awsize = max_req_size;
-            Bit #(TLog #(3)) len = truncate ((rg_bytes_left >> pack (max_req_size)) - 1);
+            Bit #(TLog #(8)) len = truncate ((rg_bytes_left >> pack (max_req_size)) - 1);
             awflit.awlen = zeroExtend (len);
             if (rg_verbosity > 0) begin
                 $display ("    making small transaction");
@@ -516,7 +516,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
             // make the maximum-sized request we can make
             let max_req_size = fn_max_size (rg_bytes_left);
             arflit.arsize = max_req_size;
-            Bit #(TLog #(3)) len = truncate ((rg_bytes_left >> pack (max_req_size)) - 1);
+            Bit #(TLog #(8)) len = truncate ((rg_bytes_left >> pack (max_req_size)) - 1);
             arflit.arlen = zeroExtend (len);
             if (rg_verbosity > 0) begin
                 $display ("    making small transaction");
