@@ -252,7 +252,6 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                          , len        : truncate (regs.key_len)
                          , reset_hash : True
                          // TODO change this
-                         , pad_zeroes : True
                          , pad_one    : True
                          , append_len : True};
         rw_sha256_req.wset (sha_req);
@@ -280,7 +279,6 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                          , len        : 64
                          , reset_hash : True
                          , pad_one    : False
-                         , pad_zeroes : True
                          , append_len : False};
         rw_sha256_req.wset (sha_req);
         stack_state.pop_port.drop;
@@ -408,7 +406,6 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             = SHA256_Req { bram_addr  : 0
                          , len        : zeroExtend (rg_chunk_len)
                          , reset_hash : rg_chunk_is_first
-                         , pad_zeroes : True
                          , pad_one    : rg_chunk_pad_one
                          , append_len : rg_chunk_is_last};
         rw_sha256_req.wset (sha_req);
@@ -434,7 +431,6 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             = SHA256_Req { bram_addr  : 0
                          , len        : zeroExtend (rg_chunk_len)
                          , reset_hash : rg_chunk_is_first
-                         , pad_zeroes : True
                          , pad_one    : rg_chunk_pad_one
                          , append_len : rg_chunk_is_last};
         rw_sha256_req.wset (sha_req);
@@ -477,7 +473,6 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             = SHA256_Req { bram_addr  : 0
                          , len        : truncate (regs.data_len)
                          , reset_hash : True
-                         , pad_zeroes : True
                          , pad_one    : True
                          , append_len : True};
         rw_sha256_req.wset (sha_req);
@@ -543,7 +538,6 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                 = SHA256_Req { bram_addr  : 0
                              , len        : 64
                              , reset_hash : True
-                             , pad_zeroes : True
                              , pad_one    : False
                              , append_len : False};
             rw_sha256_req.wset (sha_req);
@@ -559,7 +553,6 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                 = SHA256_Req { bram_addr  : 0
                              , len        : 32
                              , reset_hash : False
-                             , pad_zeroes : True
                              , pad_one    : True
                              , append_len : True};
             rw_sha256_req.wset (sha_req);

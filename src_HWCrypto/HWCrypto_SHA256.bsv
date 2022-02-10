@@ -61,7 +61,6 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
     Reg #(Bit #(3)) rg_read_ctr <- mkRegU;
     Reg #(Bit #(32)) rg_len <- mkReg (0);
     Reg #(Bit #(32)) rg_len_this <- mkReg (0);
-    Reg #(Bool) rg_pad_zeroes <- mkRegU;
     Reg #(Bool) rg_pad_one <- mkRegU;
     Reg #(Bool) rg_append_len <- mkRegU;
     Reg #(Bit #(bram_addr_sz_)) rg_last_addr <- mkRegU;
@@ -97,16 +96,13 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
                                                    , Bit #(bram_data_sz_) raw
                                                    , Bit #(32) len_total
                                                    , Bit #(32) len_this
-                                                   , Bool pad_zeroes
                                                    , Bool pad_one
                                                    , Bool append_len);
         // TODO there should be something in the BRAM that handles zeroing.
         // have a look to see if this is still necessary
         Bit #(bram_addr_sz_) zero_start_addr = truncate (len_this >> fromInteger (valueOf (TLog #(TDiv #(bram_data_sz_, 8)))));
         Integer zero_end_addr = valueOf (TDiv #(512, bram_data_sz_));
-        if (!pad_zeroes && !pad_one && !append_len) begin
-            return raw;
-        end else if (addr < zero_start_addr) begin
+        if (addr < zero_start_addr) begin
             return raw;
         end else if (addr >= fromInteger (zero_end_addr)) begin
             return raw;
@@ -138,7 +134,6 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
                                         , raw_data
                                         , rg_len
                                         , rg_len_this
-                                        , rg_pad_zeroes
                                         , rg_pad_one
                                         , rg_append_len);
         let data = fn_read_32_from_64 (mod_data, bottom_bit);
@@ -216,7 +211,6 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
                                         , bram.read
                                         , rg_len
                                         , rg_len_this
-                                        , rg_pad_zeroes
                                         , rg_pad_one
                                         , rg_append_len);
         Bit #(bram_data_sz_) data = addr[0] == 1'b0 ? {truncateLSB (mod_data), sum_rev} : {sum_rev, truncate (mod_data)};
@@ -276,7 +270,6 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
                                         , bram.read
                                         , rg_len
                                         , rg_len_this
-                                        , rg_pad_zeroes
                                         , rg_pad_one
                                         , rg_append_len);
 
@@ -351,7 +344,6 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
         let bram_addr  = req.bram_addr;
         let len        = req.len;
         let reset_hash = req.reset_hash;
-        let pad_zeroes = req.pad_zeroes;
         let pad_one    = req.pad_one;
         let append_len = req.append_len;
 
@@ -373,7 +365,6 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
             v_rg_hash[4] <= 'h510E527F; v_rg_hash[5] <= 'h9B05688C; v_rg_hash[6] <= 'h1F83D9AB; v_rg_hash[7] <= 'h5BE0CD19;
         end
         rg_append_len <= append_len;
-        rg_pad_zeroes <= pad_zeroes;
         rg_pad_one <= pad_one;
         rg_state <= READ;
     endmethod
