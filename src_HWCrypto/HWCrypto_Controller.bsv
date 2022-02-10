@@ -73,6 +73,8 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             $display ("    RAN OUT OF STATES IN THE STACK");
         end
     endrule
+    Reg #(Bit #(64)) rg_cycle_counter <- mkReg (0);
+    Reg #(Bool)      rg_cycle_counter_incr <- mkReg (False);
 
     Reg #(State) rg_state <- mkReg (IDLE);
     Reg #(State) rg_state_next <- mkRegU;
@@ -108,6 +110,10 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         return res;
     endfunction
 
+    rule rl_count (rg_cycle_counter_incr);
+        rg_cycle_counter <= rg_cycle_counter + 1;
+    endrule
+
     rule rl_handle_reg_trigger (stack_state.pop_port.canPeek
                                 && stack_state.pop_port.peek == IDLE
                                 && src_reg_trigger.canPeek);
@@ -134,6 +140,8 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         rg_bram_index <= 0;
         rg_bram_index_next <= 0;
         rg_chunks_done <= 0;
+        rg_cycle_counter <= 0;
+        rg_cycle_counter_incr <= True;
     endrule
 
     rule rl_req_key_short (stack_state.pop_port.canPeek
@@ -603,6 +611,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                     && stack_state.pop_port.peek == FINISH);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_finish");
+            $display ("    cycles counted: ", fshow (rg_cycle_counter));
         end
         src_reg_trigger.drop;
         stack_state.pop_port.drop;
