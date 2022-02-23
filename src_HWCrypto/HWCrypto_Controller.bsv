@@ -227,6 +227,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                                && stack_state.pop_port.peek == WAIT_KEY_LONG);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_req_key_long");
+            $display ("    cycle count: ", fshow (rg_cycle_counter));
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
@@ -242,6 +243,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                           && sha256_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_hash_key_req");
+            $display ("    cycle count: ", fshow (rg_cycle_counter));
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
@@ -270,6 +272,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                               && sha256_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_start_inner_hash");
+            $display ("    cycle count: ", fshow (rg_cycle_counter));
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
@@ -527,6 +530,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             $display ("    rg_key_hash_req: ", fshow (rg_key_hash_req));
             $display ("    rg_key_hash_done: ", fshow (rg_key_hash_done));
             $display ("    rg_data_hash_done: ", fshow (rg_data_hash_done));
+            $display ("    cycle counter value: ", fshow (rg_cycle_counter));
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;

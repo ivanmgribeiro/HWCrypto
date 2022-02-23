@@ -56,6 +56,9 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
     v_round_const[56] = 'h748F82EE; v_round_const[57] = 'h78A5636F; v_round_const[58] = 'h84C87814; v_round_const[59] = 'h8CC70208;
     v_round_const[60] = 'h90BEFFFA; v_round_const[61] = 'hA4506CEB; v_round_const[62] = 'hBEF9A3F7; v_round_const[63] = 'hC67178F2;
 
+    Wire #(Bool) dw_cycle_counter_reset <- mkDWire (False);
+    Reg #(Bit #(64)) rg_cycle_counter <- mkReg (0);
+
     // TODO smaller counter, max 48
     Reg #(Bit #(16)) rg_rnd_ctr <- mkRegU;
     Reg #(Bit #(3)) rg_read_ctr <- mkRegU;
@@ -118,6 +121,14 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
             return 0;
         end
     endfunction
+
+    rule rl_incr_counter;
+        if (dw_cycle_counter_reset) begin
+            rg_cycle_counter <= 0;
+        end else begin
+            rg_cycle_counter <= rg_cycle_counter + 1;
+        end
+    endrule
 
     // read the following offsets from the current BRAM address2321
     rule rl_read_regs (rg_state == READ);
@@ -323,6 +334,7 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
     rule rl_finish (rg_state == FINISH);
         if (rg_verbosity > 0) begin
             $display ("HWCrypto SHA256 rl_finish");
+            $display ("    cycle counter: ", fshow (rg_cycle_counter));
             $display ("    final hash:");
         end
         for (Integer i = 0; i < 8; i = i+1) begin
@@ -367,6 +379,7 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
         rg_append_len <= append_len;
         rg_pad_one <= pad_one;
         rg_state <= READ;
+        dw_cycle_counter_reset <= True;
     endmethod
 
     method hash_regs = readVReg (v_rg_hash);

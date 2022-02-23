@@ -79,6 +79,8 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
                                         , Div#(m_data_, 8, bram_be_)
                                         , Mul#(bram_be_, 8, m_data_)
                                         );
+    Wire #(Bool) dw_cycle_counter_reset <- mkDWire (False);
+    Reg #(Bit #(64)) rg_cycle_counter <- mkReg (0);
     Reg #(Bit #(m_addr_)) rg_bus_addr <- mkRegU;
     // normally, the bram address is a bram word address (ie it addresses which
     // bram-sized word you are accessing).
@@ -196,6 +198,13 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
     //endrule
 
 
+    rule rl_counter_incr;
+        if (dw_cycle_counter_reset) begin
+            rg_cycle_counter <= 0;
+        end else begin
+            rg_cycle_counter <= rg_cycle_counter + 1;
+        end
+    endrule
 
 
     // set 1: get bus-width aligned.
@@ -295,6 +304,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
         if (rg_flits_left == 0) begin
             if (new_bytes_left == 0) begin
                 $display (" finished");
+                $display ("    cycle counter: ", fshow (rg_cycle_counter));
                 rg_state <= IDLE;
                 snk.put (?);
             end else begin
@@ -470,6 +480,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
                     rg_state <= IDLE;
                     snk.put (?);
                     $display ("    fetch finished; going to IDLE");
+                    $display ("    cycle counter: ", fshow (rg_cycle_counter));
                 end
             end else begin
                 rg_state <= FETCH_NEXT;
@@ -644,6 +655,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
         rg_len <= len;
         rg_bytes_left <= len;
         rg_state <= dir == BUS2BRAM ? WAIT_RRESP : WRITE_BURST;
+        dw_cycle_counter_reset <= True;
     endmethod
 
     method Bool is_ready = rg_state == IDLE;
