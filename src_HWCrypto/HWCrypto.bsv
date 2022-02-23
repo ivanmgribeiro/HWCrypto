@@ -45,6 +45,13 @@ interface HWCrypto_IFC #( // master interface parameters
     method Action reset;
 endinterface
 
+(* synthesize *)
+module mkHWCrypto64_Synth (HWCrypto_IFC #(4, 64, 64, 0, 0, 0, 0, 0,
+                                          6, 64, 64, 0, 0, 0, 0, 0));
+    let hwcrypto <- mkHWCrypto;
+    return hwcrypto;
+endmodule
+
 // TODO remove restriction for addr and data to be 64b
 module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
                   provisos ( Add #(0, 64, s_addr_)
