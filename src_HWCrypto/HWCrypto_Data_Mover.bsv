@@ -96,7 +96,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
     Reg #(AXI4_Len) rg_flits_left <- mkRegU;
     Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
     Reg #(Bit #(bram_data_sz_)) rg_last_data <- mkRegU;
-    let shim <- mkAXI4Shim;
+    let shim <- mkAXI4ShimFF;
     let ugshim_slave <- toUnguarded_AXI4_Slave (shim.slave);
 
 
