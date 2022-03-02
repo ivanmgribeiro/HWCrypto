@@ -8,20 +8,17 @@ typedef enum {
 
 typedef struct {
     Bit #(m_addr_) bus_addr;
-    Bit #(bram_addr_sz_) bram_addr;
     HWCrypto_Dir dir;
     Bit #(64) len;
 } Data_Mover_Req #( numeric type m_addr_
-                  , numeric type bram_addr_sz_
                   ) deriving (Bits, FShow);
 
 typedef struct {
-    Bit #(bram_addr_sz_) bram_addr;
     Bit #(32) len;
     Bool reset_hash;
     Bool pad_one;
     Bool append_len;
-} SHA256_Req #(numeric type bram_addr_sz_) deriving (Bits, FShow);
+} SHA256_Req deriving (Bits, FShow);
 
 // TODO generalise?
 typedef struct {

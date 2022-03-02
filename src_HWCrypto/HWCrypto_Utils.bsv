@@ -236,4 +236,57 @@ module mkMulti_Push_Stack #(parameter data_ init)
     endmethod
 endmodule
 
+function Vector #(n_, Reg #(Bit #(TMul #(sz_, 2))))
+    fn_merge_vreg (Vector #(TMul #(n_, 2), Reg #(Bit #(sz_))) v_rg_i);
+
+    Vector #(n_, Reg #(Bit #(TMul #(sz_, 2)))) v_rg_o = newVector;
+    for (Integer i = 0; i < valueOf (n_); i = i+1) begin
+        v_rg_o[i] = interface Reg;
+            method Action _write (Bit #(TMul #(sz_, 2)) val);
+                v_rg_i[2*i]     <= val[valueOf (sz_) - 1 : 0];
+                v_rg_i[2*i + 1] <= val[valueOf (TMul #(sz_, 2)) - 1 : valueOf (sz_)];
+            endmethod
+            method _read = {v_rg_i[2*i + 1], v_rg_i[2*i]};
+        endinterface;
+    end
+    return v_rg_o;
+endfunction
+
+interface VReg_XOR_IFC #(numeric type n_, type data_t_);
+    interface Vector #(n_, Reg #(data_t_)) regs;
+    method Action set_xor (data_t_ val);
+endinterface
+
+module mkVReg_XOR #(Vector #(n_, Reg #(data_t_)) v_rg_i)
+                   (VReg_XOR_IFC #(n_, data_t_))
+                   provisos ( Bits #(data_t_, data_sz_)
+                            , Bitwise#(data_t_)
+                            , Literal#(data_t_)
+                            , FShow #(data_t_));
+    Reg #(data_t_) rg_xor <- mkReg (0);
+
+    Vector #(n_, Reg #(data_t_)) v_rg_o = newVector;
+    for (Integer i = 0; i < valueOf (n_); i = i+1) begin
+        v_rg_o[i] = interface Reg;
+            method Action _write (data_t_ val);
+                v_rg_i[i] <= val;
+            endmethod
+            method data_t_ _read = v_rg_i[i] ^ rg_xor;
+        endinterface;
+    end
+
+    interface Vector regs = v_rg_o;
+    method Action set_xor (data_t_ val);
+        $display ("set_xor: ", fshow (val));
+        rg_xor <= val;
+    endmethod
+endmodule
+
+function Vector #(n_, Reg #(data_t_))
+    fn_vreg_mux (Vector #(m_, Vector #(n_, Reg #(data_t_))) v_v_rg_i, Bit #(TLog #(m_)) sel);
+    return v_v_rg_i[sel];
+endfunction
+
+
+
 endpackage
