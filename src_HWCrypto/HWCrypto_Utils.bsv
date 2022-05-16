@@ -226,7 +226,10 @@ module mkMulti_Push_Stack #(parameter data_ init)
     interface put_port = v_sinks;
 
     method Action reset;
-        rg_ctr <= 0;
+        rg_ctr <= 1;
+        for (Integer i = 0; i < valueOf (n_push); i = i+1) begin
+            v_rg[i] <= init;
+        end
     endmethod
 
     method Action print_state;
