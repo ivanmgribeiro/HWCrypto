@@ -37,7 +37,7 @@ endinterface
  *      then the HWCrypto is idle. Otherwise it is not.
  */
 // TODO remove restriction for addr and data to be 64b
-module mkHWCrypto_Reg_Handler #(Sink #(Token) snk)
+module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                                (HWCrypto_Reg_Handler_IFC #(`SPARAMS))
                                provisos ( Add #(0, 64, s_addr_)
                                         , Add #(0, 64, s_data_)
@@ -92,6 +92,9 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk)
                         $display ("    Triggering next stage");
                     end
                     snk.put (?); // trigger next stage
+                    if (src.canPeek) begin
+                        src.drop;
+                    end
                 end
             end
 
@@ -148,7 +151,8 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk)
             else if (index == 2) data = rg_key_ptr;
             else if (index == 3) data = rg_key_len;
             else if (index == 4) data = rg_dest_ptr;
-            else if (index == 5) data = zeroExtend (pack (!snk.canPut));
+            else if (index == 5) data = zeroExtend ({ pack (src.canPeek && src.peek != OKAY)
+                                                    , pack (!snk.canPut)});
         end else begin
             if (rg_verbosity > 0) begin
                 $display ("    request is invalid");

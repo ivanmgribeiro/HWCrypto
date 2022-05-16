@@ -53,8 +53,9 @@ interface HWCrypto_Controller_IFC #( numeric type m_addr_
 endinterface
 
 module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
+                              , Sink #(HWCrypto_Err) snk_reg_result
                               , Bool data_mover_is_ready
-                              , Source #(Token) src_data_mover
+                              , Source #(HWCrypto_Err) src_data_mover
                               , Bool sha256_is_ready
                               , Source #(Token) src_sha256
                               , Bool hash_copy_is_ready
@@ -169,7 +170,8 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_wait_key_short (stack_state.pop_port.canPeek
                             && stack_state.pop_port.peek == WAIT_KEY_SHORT
-                            && src_data_mover.canPeek);
+                            && src_data_mover.canPeek
+                            && src_data_mover.peek == OKAY);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_key_short");
         end
@@ -397,6 +399,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     rule rl_wait_read (stack_state.pop_port.canPeek
                        && stack_state.pop_port.peek == WAIT_READ
                        && src_data_mover.canPeek
+                       && src_data_mover.peek == OKAY
                        && sha256_is_ready);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_read");
@@ -463,7 +466,8 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_wait_data (stack_state.pop_port.canPeek
                        && stack_state.pop_port.peek == WAIT_DATA
-                       && src_data_mover.canPeek);
+                       && src_data_mover.canPeek
+                       && src_data_mover.peek == OKAY);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_data");
         end
@@ -592,7 +596,8 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_wait_write_back (stack_state.pop_port.canPeek
                              && stack_state.pop_port.peek == WAIT_WRITE_BACK
-                             && src_data_mover.canPeek);
+                             && src_data_mover.canPeek
+                             && src_data_mover.peek == OKAY);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_write_back");
         end
@@ -611,8 +616,33 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             $display ("    cycles counted: ", fshow (rg_cycle_counter));
         end
         src_reg_trigger.drop;
+        if (snk_reg_result.canPut) begin
+            snk_reg_result.put(OKAY);
+        end
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (IDLE);
+    endrule
+
+    rule rl_handle_dm_err (stack_state.pop_port.canPeek
+                           && (stack_state.pop_port.peek == WAIT_WRITE_BACK
+                               || stack_state.pop_port.peek == WAIT_KEY_SHORT
+                               || stack_state.pop_port.peek == WAIT_READ
+                               || stack_state.pop_port.peek == WAIT_DATA)
+                           && src_data_mover.canPeek
+                           && src_data_mover.peek != OKAY);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Controller rl_handle_dm_err");
+        end
+        // The datamover encountered a bus error; reset the state, write error
+        // to registers and go to IDLE
+        stack_state.reset;
+        src_reg_trigger.drop;
+        src_data_mover.drop;
+        if (snk_reg_result.canPut) begin
+            snk_reg_result.put (ERROR);
+        end else begin
+            $display ("    ERROR: not able to push result to register handler");
+        end
     endrule
 
 

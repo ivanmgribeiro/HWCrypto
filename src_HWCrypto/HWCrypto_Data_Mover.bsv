@@ -13,9 +13,12 @@ typedef enum {
     WAIT_RRESP,
     WRITE_BURST,
     WRITE_LAST,
+    WAIT_BRESP,
+    HANDLE_BRESP,
     WRITE_NEXT,
     ALIGN,
     STEADY,
+    ERR,
     FINISH
 } State deriving (Bits, Eq, FShow);
 
@@ -61,7 +64,7 @@ endinterface
  *  First, we need to align the address so we can fetch bigger things (AXI4
  *  means that our requests must always be size-aligned
  */
-module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_)) bram, Sink #(Token) snk)
+module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_)) bram, Sink #(HWCrypto_Err) snk)
                                (HWCrypto_Data_Mover_IFC #(`MPARAMS, bram_addr_sz_))
                                provisos ( Add#(a__, TLog#(TAdd#(1, TLog#(TDiv#(m_data_, 8)))), 3)
                                         , Add#(b__, 10, m_addr_)
@@ -305,20 +308,34 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
             if (new_bytes_left == 0) begin
                 $display (" finished");
                 $display ("    cycle counter: ", fshow (rg_cycle_counter));
-                rg_state <= IDLE;
-                snk.put (?);
-            end else begin
-                // need to write the next AWFlit if needed
-                rg_state <= WRITE_NEXT;
             end
+            // wait to receive the BResp before moving on to issue the next AWFlit
+            // This introduces some latency but makes handling errors on the bus easier
+            rg_state <= WAIT_BRESP;
         end
     endrule
 
-    rule rl_drop_bresp (ugshim_slave.b.canPeek);
-        ugshim_slave.b.drop;
+    rule rl_drop_bresp (rg_state == WAIT_BRESP
+                        && ugshim_slave.b.canPeek
+                        && ugshim_slave.b.peek.bresp != DECERR
+                        && ugshim_slave.b.peek.bresp != SLVERR);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto DataMover rl_drop_bresp");
             $display ("    flit: ", fshow (ugshim_slave.b.peek));
+            $display ("    rg_bytes_left: ", fshow (rg_bytes_left));
+        end
+        ugshim_slave.b.drop;
+        if (rg_bytes_left == 0) begin
+            rg_state <= IDLE;
+            snk.put (OKAY);
+            if (rg_verbosity > 0) begin
+                $display ("    going to state IDLE and returning OKAY");
+            end
+        end else begin
+            rg_state <= WRITE_NEXT;
+            if (rg_verbosity > 0) begin
+                $display ("    going to state WRITE_NEXT");
+            end
         end
     endrule
 
@@ -374,7 +391,11 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
     endrule
 
 
-    rule rl_handle_rresp (rg_state == WAIT_RRESP && ugshim_slave.r.canPeek && rg_dir == BUS2BRAM);
+    rule rl_handle_rresp (rg_state == WAIT_RRESP
+                          && (ugshim_slave.r.canPeek
+                              && ugshim_slave.r.peek.rresp != SLVERR
+                              && ugshim_slave.r.peek.rresp != DECERR)
+                          && rg_dir == BUS2BRAM);
         let rflit = ugshim_slave.r.peek;
         ugshim_slave.r.drop;
         let bytes_read = 1 << pack (rg_last_req_size);
@@ -478,7 +499,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
                     rg_state <= WRITE_LAST;
                 end else begin
                     rg_state <= IDLE;
-                    snk.put (?);
+                    snk.put (OKAY);
                     $display ("    fetch finished; going to IDLE");
                     $display ("    cycle counter: ", fshow (rg_cycle_counter));
                 end
@@ -497,7 +518,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
             $display ("    addr: ", fshow (addr), ", data: ", fshow (data));
         end
         rg_state <= IDLE;
-        snk.put (?);
+        snk.put (OKAY);
     endrule
 
     // This rule assumes that the address in rg_bus_addr is bus-width-aligned
@@ -545,7 +566,50 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
         end
     endrule
 
+    rule rl_handle_axi_err ((rg_state == WAIT_RRESP
+                             && ugshim_slave.r.canPeek
+                             && (ugshim_slave.r.peek.rresp == DECERR
+                                 || ugshim_slave.r.peek.rresp == SLVERR))
+                            || (rg_state == WAIT_BRESP
+                                && ugshim_slave.b.canPeek
+                                && (ugshim_slave.b.peek.bresp == DECERR
+                                    || ugshim_slave.b.peek.bresp == SLVERR)));
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto DataMover rl_handle_axi_err");
+        end
+        let signal_error = False;
+        if (rg_state == WAIT_RRESP) begin
+            if (rg_verbosity > 0) begin
+                $display ("    error on read response channel");
+            end
+            // need to finish receiving the next few rresps
 
+            ugshim_slave.r.drop;
+
+            // if this is the last rflit, go to IDLE and signal error to controller
+            if (ugshim_slave.r.peek.rlast) begin
+                if (rg_verbosity > 0) begin
+                    $display ("    last response; going to IDLE");
+                end
+                rg_state <= IDLE;
+                signal_error = True;
+            end
+        end else begin
+            if (rg_verbosity > 0) begin
+                $display ("    error on write response channel, going to IDLE");
+            end
+            // no need to wait for more responses, we can go directly to IDLE
+            // and signal the controller
+            rg_state <= IDLE;
+            ugshim_slave.b.drop;
+            signal_error = True;
+        end
+
+        if (signal_error) begin
+            $display ("    signalling ERROR");
+            snk.put(ERROR);
+        end
+    endrule
 
 
     method Action request (Data_Mover_Req #(m_addr_, bram_addr_sz_) req)

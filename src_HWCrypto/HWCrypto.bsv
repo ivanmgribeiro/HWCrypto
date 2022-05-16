@@ -75,14 +75,15 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
                            );
     Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
     FIFOF #(Token) fifo_reg_trigger <- mkUGFIFOF1;
-    FIFOF #(Token) fifo_copy_end    <- mkUGFIFOF1;
+    FIFOF #(HWCrypto_Err) fifo_reg_result <- mkUGFIFOF1;
+    FIFOF #(HWCrypto_Err) fifo_copy_end    <- mkUGFIFOF1;
     FIFOF #(Token) fifo_sha256_end  <- mkUGFIFOF1;
     FIFOF #(Token) fifo_hash_copy_end <- mkUGFIFOF;
     FIFOF #(Token) fifo_print_bram  <- mkUGFIFOF1;
     Reg #(Bool) rg_print_requested <- mkReg (False);
     Reg #(Bit #(32)) rg_bram_ctr <- mkReg (0);
 
-    let reg_handler <- mkHWCrypto_Reg_Handler (toSink (fifo_reg_trigger));
+    let reg_handler <- mkHWCrypto_Reg_Handler (toSink (fifo_reg_trigger), toSource (fifo_reg_result));
     // TODO change 512
     BRAM_DUAL_PORT #(Bit #(32), Bit #(m_data_)) key_bram <- mkBRAMCore2 (512, False);
     BRAM_DUAL_PORT #(Bit #(32), Bit #(m_data_)) data_bram <- mkBRAMCore2 (512, False);
@@ -102,6 +103,7 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
     let hash_copy <- mkCopy_Hash_To_BRAM (sha256.hash_regs, bram.a, dw_run_hash_copy, toSink (fifo_hash_copy_end));
     HWCrypto_Controller_IFC #(m_addr_, 32, m_data_, 2) controller
         <- mkHWCrypto_Controller ( toSource (fifo_reg_trigger)
+                                 , toSink (fifo_reg_result)
                                  , data_mover.is_ready
                                  , toSource (fifo_copy_end)
                                  , sha256.is_ready

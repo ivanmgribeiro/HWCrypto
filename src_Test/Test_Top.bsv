@@ -12,19 +12,24 @@ import Mem_Controller :: *;
 
 module mkTest_Top (Empty);
 
-    Vector #(12, Test_Elem) test_seq = newVector;
+    Vector #(17, Test_Elem) test_seq = newVector;
     test_seq[0]  = Test_Elem {delay:  0, addr:  0, data:  0, is_read: False};
     test_seq[1]  = Test_Elem {delay: 50, addr:  8, data:  11, is_read: False};
     test_seq[2]  = Test_Elem {delay: 50, addr: 16, data:  0, is_read: False};
     test_seq[3]  = Test_Elem {delay: 50, addr: 24, data:  11, is_read: False};
-    test_seq[4]  = Test_Elem {delay: 50, addr: 32, data:  'h1000_0000, is_read: False};
+    test_seq[4]  = Test_Elem {delay: 50, addr: 32, data:  'hf000_0000, is_read: False};
     test_seq[5]  = Test_Elem {delay: 50, addr:  0, data:  ?, is_read: True};
     test_seq[6]  = Test_Elem {delay: 50, addr:  8, data:  ?, is_read: True};
     test_seq[7]  = Test_Elem {delay: 50, addr: 16, data:  ?, is_read: True};
     test_seq[8]  = Test_Elem {delay: 50, addr: 24, data:  ?, is_read: True};
     test_seq[9]  = Test_Elem {delay: 50, addr: 32, data:  ?, is_read: True};
     test_seq[10] = Test_Elem {delay: 50, addr: 40, data:  1, is_read: False};
-    test_seq[11] = Test_Elem {delay: 5000, addr: 0, data: ?, is_read: True};
+    test_seq[11] = Test_Elem {delay: 5000, addr: 40, data: ?, is_read: True};
+    test_seq[12] = Test_Elem {delay: 5000, addr: 40, data: ?, is_read: True};
+    test_seq[13]  = Test_Elem {delay: 50, addr: 32, data:  'h1000_0000, is_read: False};
+    test_seq[14] = Test_Elem {delay: 50, addr: 40, data:  1, is_read: False};
+    test_seq[15] = Test_Elem {delay: 5000, addr: 40, data: ?, is_read: True};
+    test_seq[16] = Test_Elem {delay: 5000, addr: 40, data: ?, is_read: True};
 
     HWCrypto_IFC #(0, 64, 64, 0, 0, 0, 0, 0, 0, 64, 64, 0, 0, 0, 0, 0) hw_crypto <- mkHWCrypto;
     Test_Request_Generator_IFC #(0, 64, 64, 0, 0, 0, 0, 0) test_gen <- mkTest_Request_Generator (test_seq);
