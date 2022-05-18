@@ -1,7 +1,9 @@
 TMP_DIRS = -bdir build_dir  -simdir build_dir  -info-dir build_dir
 
-INCLUDE_DIRS = :../libs/BlueStuff/AXI:../libs/BlueStuff/BlueBasics:../libs/BlueStuff:src_Test:src_HWCrypto:src_Boot_ROM:src_Mem_Model:+
+INCLUDE_DIRS = :../libs/BlueStuff/AXI:../libs/BlueStuff/BlueBasics:../libs/BlueStuff:src_Test:src_HWCrypto:src_Boot_ROM:src_Mem_Model:../libs/cheri-cap-lib/:+
 #	    -p $(INCLUDE_DIRS) \
+
+BSC_COMPILATION_FLAGS = -D HWCRYPTO_CHERI_FAT -D HWCRYPTO_CHERI
 
 build_dir:
 	mkdir -p build_dir

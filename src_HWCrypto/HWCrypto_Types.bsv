@@ -30,6 +30,9 @@
 
 package HWCrypto_Types;
 
+import CHERICap :: *;
+import CHERICC_Fat :: *;
+
 typedef Bit #(0) Token;
 typedef enum {
     ERROR,
@@ -57,13 +60,25 @@ typedef struct {
     Bool append_len;
 } SHA256_Req #(numeric type bram_addr_sz_) deriving (Bits, FShow);
 
-// TODO generalise?
+`ifdef HWCRYPTO_CHERI
+`ifdef HWCRYPTO_CHERI_FAT
+typedef CapReg HWCrypto_Ptr;
+typedef Bit #(64) HWCrypto_Len;
+`else
+typedef CapMem HWCrypto_Ptr;
+typedef Bit #(64) HWCrypto_Len;
+`endif
+`else
+typedef Bit #(64) HWCrypto_Ptr;
+typedef Bit #(64) HWCrypto_Len;
+`endif
+
 typedef struct {
-    Bit #(64) data_ptr;
-    Bit #(64) data_len;
-    Bit #(64) key_ptr;
-    Bit #(64) key_len;
-    Bit #(64) dest_ptr;
+    HWCrypto_Ptr data_ptr;
+    HWCrypto_Ptr key_ptr;
+    HWCrypto_Ptr dest_ptr;
+    HWCrypto_Len data_len;
+    HWCrypto_Len key_len;
 } HWCrypto_Regs deriving (Bits, Eq, FShow);
 
 

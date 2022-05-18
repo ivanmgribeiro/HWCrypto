@@ -269,4 +269,9 @@ module mkMulti_Push_Stack #(parameter data_ init)
     endmethod
 endmodule
 
+function Bit #(n_) fn_truncate_or_ze (Bit #(p_) val);
+    Bit #(TAdd #(n_, p_)) extended = zeroExtend (val);
+    return truncate (extended);
+endfunction
+
 endpackage
