@@ -40,14 +40,17 @@ import Boot_ROM :: *;
 import Mem_Model :: *;
 import Mem_Controller :: *;
 
+`define MUSER 0, 1, 0, 0, 1
+`define SUSER 0, 1, 0, 0, 1
+
 module mkTest_Top (Empty);
 
     Vector #(17, Test_Elem) test_seq = newVector;
     test_seq[0]  = Test_Elem {delay:  0, addr:  0, data:  0, is_read: False};
-    test_seq[1]  = Test_Elem {delay: 50, addr:  8, data:  11, is_read: False};
-    test_seq[2]  = Test_Elem {delay: 50, addr: 16, data:  0, is_read: False};
-    test_seq[3]  = Test_Elem {delay: 50, addr: 24, data:  11, is_read: False};
-    test_seq[4]  = Test_Elem {delay: 50, addr: 32, data:  'hf000_0000, is_read: False};
+    test_seq[2]  = Test_Elem {delay: 50, addr:  8, data:  0, is_read: False};
+    test_seq[4]  = Test_Elem {delay: 50, addr: 16, data:  'h1000_0000, is_read: False};
+    test_seq[1]  = Test_Elem {delay: 50, addr: 24, data:  11, is_read: False};
+    test_seq[3]  = Test_Elem {delay: 50, addr: 32, data:  11, is_read: False};
     test_seq[5]  = Test_Elem {delay: 50, addr:  0, data:  ?, is_read: True};
     test_seq[6]  = Test_Elem {delay: 50, addr:  8, data:  ?, is_read: True};
     test_seq[7]  = Test_Elem {delay: 50, addr: 16, data:  ?, is_read: True};
@@ -61,29 +64,32 @@ module mkTest_Top (Empty);
     test_seq[15] = Test_Elem {delay: 5000, addr: 40, data: ?, is_read: True};
     test_seq[16] = Test_Elem {delay: 5000, addr: 40, data: ?, is_read: True};
 
-    HWCrypto_IFC #(0, 64, 64, 0, 0, 0, 0, 0, 0, 64, 64, 0, 0, 0, 0, 0) hw_crypto <- mkHWCrypto;
-    Test_Request_Generator_IFC #(0, 64, 64, 0, 0, 0, 0, 0) test_gen <- mkTest_Request_Generator (test_seq);
-    AXI4_Slave #(0, 64, 64, 0, 0, 0, 0, 0) test_slave <- mkPerpetualValueAXI4Slave (?);
+    HWCrypto_IFC #(0, 64, 64, `MUSER, 0, 64, 64, `SUSER) hw_crypto <- mkHWCrypto;
+    Test_Request_Generator_IFC #(0, 64, 64, `MUSER) test_gen <- mkTest_Request_Generator (test_seq);
+    AXI4_Slave #(0, 64, 64, `SUSER) test_slave <- mkPerpetualValueAXI4Slave (?);
 
 
     let boot_rom <- mkBoot_ROM;
-    AXI4_Shim #(0, 64, 64, 0, 0, 0, 0, 0) brom_deburster <- mkBurstToNoBurst;
-    mkConnection (brom_deburster.master, boot_rom.slave);
+    AXI4_Shim #(0, 64, 64, `MUSER) brom_deburster <- mkBurstToNoBurst;
+    AXI4_Slave #(0, 64, 64, `SUSER) brom_slave_ext = zeroSlaveUserFields (boot_rom.slave);
+    mkConnection (brom_deburster.master, brom_slave_ext);
 
 
     let mem_model <- mkMem_Model;
     let mem_controller <- mkMem_Controller;
-    AXI4_Shim #(0, 64, 64, 0, 0, 0, 0, 0) mem_deburster <- mkBurstToNoBurst;
-    mkConnection (mem_deburster.master, mem_controller.slave);
+    AXI4_Shim #(0, 64, 64, `MUSER) mem_deburster <- mkBurstToNoBurst;
+    AXI4_Slave #(0, 64, 64, `SUSER) mem_controller_slv_ext = zeroSlaveUserFields (mem_controller.slave);
+    mkConnection (mem_deburster.master, mem_controller_slv_ext);
     mkConnection (mem_controller.to_raw_mem, mem_model.mem_server);
 
-    mkConnection (hw_crypto.axi_s, test_gen.axi_m);
+    AXI4_Slave #(0, 64, 64, `SUSER) hwcrypto_slv_ext = zeroSlaveUserFields (hw_crypto.axi_s);
+    mkConnection (hwcrypto_slv_ext, test_gen.axi_m);
 
-    Vector #(2, AXI4_Slave #(0, 64, 64, 0, 0, 0, 0, 0)) slave_vector = newVector;
-    slave_vector[0] = brom_deburster.slave;
+    Vector #(2, AXI4_Slave #(0, 64, 64, `SUSER)) slave_vector = newVector;
+    slave_vector[0] = zeroSlaveUserFields (brom_deburster.slave);
     slave_vector[1] = debugAXI4_Slave (mem_deburster.slave, $format ("mem_deburster slave"));
 
-    Vector #(1, AXI4_Master #(0, 64, 64, 0, 0, 0, 0, 0)) master_vector = newVector;
+    Vector #(1, AXI4_Master #(0, 64, 64, `MUSER)) master_vector = newVector;
     master_vector[0] = hw_crypto.axi_m;
 
     function Vector #(2, Bool) fn_route (Bit #(64) addr);
