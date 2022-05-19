@@ -102,6 +102,8 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
 
     AXI4_Shim #(`SPARAMS) shim <- mkAXI4ShimFF;
 
+    Integer dest_len = 32;
+
 `ifdef HWCRYPTO_CHERI
     let data_ptr_idx = 0;
     let key_ptr_idx = 2;
@@ -133,6 +135,15 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
     let rg_flits_incr = rg_flits_handled + 1;
 
     Reg #(Bool) rg_read_ok <- mkReg (True);
+
+`ifdef HWCRYPTO_CHERI
+    Reg #(Bool) rg_do_check <- mkReg (False);
+    Reg #(Bool) rg_cheri_err <- mkReg (False);
+`ifdef HWCRYPTO_CHERI_FAT
+    Reg #(Bit #(2)) rg_check_ctr <- mkReg (0);
+    Reg #(Bool) rg_check_ok <- mkReg (True);
+`endif
+`endif
 
     rule rl_handle_write (shim.master.aw.canPeek
                           && shim.master.w.canPeek
@@ -185,7 +196,7 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                 end
 
                 // only allow writes when we are not currently processing a request
-                if (snk.canPut) begin
+                if (snk.canPut && !rg_do_check) begin
                     if (rg_verbosity > 0) begin
                         $display ("    HWCrypto is idle; writing to register with index ", fshow (index));
                         $display ("        value to write: ", fshow (wflit.wdata));
@@ -227,7 +238,12 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                         if (rg_verbosity > 0) begin
                             $display ("    Triggering next stage");
                         end
+`ifdef HWCRYPTO_CHERI
+                        rg_do_check <= True;
+                        rg_cheri_err <= False;
+`else
                         snk.put (?); // trigger next stage
+`endif
                         if (src.canPeek) begin
                             src.drop;
                         end
@@ -424,8 +440,9 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                     end else if (index == key_len_idx) begin
                         data = rg_key_len;
                     end else if (index == status_idx) begin
-                        data = zeroExtend ({ pack (src.canPeek && src.peek != OKAY)
-                                           , pack (!snk.canPut)});
+                        data = zeroExtend ({ pack (rg_cheri_err)
+                                           , pack (src.canPeek && src.peek != OKAY)
+                                           , pack (!snk.canPut && !rg_do_check)});
 
                     end
                 end
@@ -466,6 +483,70 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
         rg_flits_handled <= 0;
         rg_read_ok <= True;
     endrule
+
+`ifdef HWCRYPTO_CHERI
+    rule rl_do_check (rg_do_check);
+        if (rg_verbosity > 0) begin
+            $display ("%m HWCrypto Reg Handler rl_do_check");
+        end
+        let caps_ok = False;
+        let all_ok = False;
+        let final_check = True;
+`ifdef HWCRYPTO_CHERI_FAT
+        CapPipe cap_data_pipe = cast (rg_data_ptr);
+        CapPipe cap_key_pipe = cast (rg_key_ptr);
+        CapPipe cap_dest_pipe = cast (rg_dest_ptr);
+        if (rg_verbosity > 1) begin
+            $display ("    caps:");
+            $display ("    data cap: ", fshow (cap_data_pipe));
+            $display ("    key cap: ", fshow (cap_key_pipe));
+            $display ("    dest cap: ", fshow (cap_dest_pipe));
+        end
+        // TODO check tag, seal, etc
+        caps_ok = (getBase (cap_data_pipe) <= getAddr (cap_data_pipe))                  // data pointer checks
+                  && (getTop (cap_data_pipe) >= zeroExtend (getAddr (cap_data_pipe)) + zeroExtend (rg_data_len))
+                  && (getHardPerms (cap_data_pipe).permitLoad)
+                  && (getBase (cap_key_pipe) <= getAddr (cap_key_pipe))                 // key pointer checks
+                  && (getTop (cap_key_pipe) >= zeroExtend (getAddr (cap_key_pipe)) + zeroExtend (rg_key_len))
+                  && (getHardPerms (cap_key_pipe).permitLoad)
+                  && (getBase (cap_dest_pipe) <= getAddr (cap_dest_pipe))               // dest pointer checks
+                  && (getTop (cap_dest_pipe) >= zeroExtend (getAddr (cap_dest_pipe)) + fromInteger (dest_len))
+                  && (getHardPerms (cap_dest_pipe).permitStore);
+        all_ok = caps_ok;
+`else
+        final_check = rg_check_ctr == 2;
+        let cap = rg_check_ctr == 0 ? rg_data_ptr
+                : rg_check_ctr == 1 ? rg_key_ptr
+                : rg_dest_ptr;
+        CapPipe cap_pipe = fromMem (cap);
+        let len = rg_check_ctr == 0 ? rg_data_len
+                : rg_check_ctr == 1 ? rg_key_len
+                : fromInteger (dest_len);
+        caps_ok = (getBase (cap) <= getAddr (cap))
+                  && (getTop (cap) >= zeroExtend (getAddr (cap)) + zeroExtend (len))
+                  && (rg_check_ctr == 2 ? getHardPerms (cap).permitStore
+                                        : getHardPerms (cap).permitLoad);
+        all_ok = final_check && rg_check_ok && caps_ok;
+        if (!final_check) begin
+            rg_check_ctr <= rg_check_ctr + 1;
+            rg_check_ok <= all_ok;
+        end
+`endif
+
+        if (final_check) begin
+            rg_cheri_err <= !all_ok;
+            rg_do_check <= False;
+
+`ifndef HWCRYPTO_CHERI_FAT
+            rg_check_ctr <= 0;
+            rg_check_ok <= True;
+`endif
+            if (all_ok) begin
+                snk.put (?);
+            end
+        end
+    endrule
+`endif
 
 
     interface axi_s = shim.slave;
