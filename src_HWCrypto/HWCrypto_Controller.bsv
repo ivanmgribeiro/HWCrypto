@@ -35,7 +35,9 @@ import HWCrypto_Utils :: *;
 import RWire :: *;
 import SourceSink :: *;
 
+`ifdef HWCRYPTO_CHERI
 import CHERICap :: *;
+`endif
 
 typedef enum {
     IDLE,
@@ -187,7 +189,12 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             stack_state.print_state;
         end
         Data_Mover_Req #(m_addr_, bram_addr_sz_) dm_req
-            = Data_Mover_Req { bus_addr  : getAddr (regs.key_ptr)
+            = Data_Mover_Req { bus_addr  :
+`ifdef HWCRYPTO_CHERI
+                                           getAddr (regs.key_ptr)
+`else
+                                           regs.key_ptr
+`endif
                              , bram_addr : 0
                              , dir       : BUS2BRAM
                              , len       : regs.key_len};
@@ -238,7 +245,12 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             stack_state.print_state;
         end
         rg_hash_total_len <= regs.key_len;
-        rg_hash_ptr <= getAddr (regs.key_ptr);
+        rg_hash_ptr <=
+`ifdef HWCRYPTO_CHERI
+                       getAddr (regs.key_ptr);
+`else
+                       regs.key_ptr;
+`endif
         rg_chunks_done <= 0;
         rg_data_chunks_read <= 0;
         Bit #(TLog #(64)) len_bottom_bits = truncate (regs.key_len);
@@ -343,7 +355,12 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         rg_replicate_byte <= 'h5c;
         let total_len = regs.data_len + 64;
         rg_hash_total_len <= total_len;
-        rg_hash_ptr <= getAddr (regs.data_ptr);
+        rg_hash_ptr <=
+`ifdef HWCRYPTO_CHERI
+                       getAddr (regs.data_ptr);
+`else
+                       regs.data_ptr;
+`endif
         rg_chunks_done <= 1;
         rg_data_chunks_read <= 0;
 
@@ -617,7 +634,12 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             stack_state.print_state;
         end
         Data_Mover_Req #(m_addr_, bram_addr_sz_) dm_req
-            = Data_Mover_Req { bus_addr  : getAddr (regs.dest_ptr)
+            = Data_Mover_Req { bus_addr  :
+`ifdef HWCRYPTO_CHERI
+                                           getAddr (regs.dest_ptr)
+`else
+                                           regs.dest_ptr
+`endif
                              , bram_addr : 0
                              , dir       : BRAM2BUS
                              , len       : 32};

@@ -139,11 +139,11 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
 `ifdef HWCRYPTO_CHERI
     Reg #(Bool) rg_do_check <- mkReg (False);
     Reg #(Bool) rg_cheri_err <- mkReg (False);
-`ifdef HWCRYPTO_CHERI_FAT
+`ifndef HWCRYPTO_CHERI_FAT
     Reg #(Bit #(2)) rg_check_ctr <- mkReg (0);
     Reg #(Bool) rg_check_ok <- mkReg (True);
-`endif
-`endif
+`endif // !HWCRYPTO_CHERI_FAT
+`endif // HWCRYPTO_CHERI
 
     rule rl_handle_write (shim.master.aw.canPeek
                           && shim.master.w.canPeek
@@ -196,7 +196,11 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                 end
 
                 // only allow writes when we are not currently processing a request
-                if (snk.canPut && !rg_do_check) begin
+                if (snk.canPut
+`ifdef HWCRYPTO_CHERI
+                               && !rg_do_check
+`endif
+                                              ) begin
                     if (rg_verbosity > 0) begin
                         $display ("    HWCrypto is idle; writing to register with index ", fshow (index));
                         $display ("        value to write: ", fshow (wflit.wdata));
@@ -219,7 +223,7 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                     else if (index == dest_ptr_idx) rg_dest_ptr <= cap_exp;
 `else
                     // with HWCRYPTO_CHERI, without HWCRYPTO_CHERI_FAT
-                    CapMem cap_mem = unpack ({ wflit.wuser & rg_prev_flit_wuser
+                    CapMem cap_mem = unpack ({ fn_truncate_or_ze (wflit.wuser & rg_prev_flit_wuser)
                                              , wflit.wdata
                                              , rg_prev_flit_data});
                     if (index == data_ptr_idx)      rg_data_ptr <= cap_mem;
@@ -353,7 +357,7 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
             Bit #(1) cap_valid = truncateLSB(cap_mem);
             Bit #(TSub #(SizeOf #(CapMem), 1)) cap_data = truncate (cap_mem);
             rg_prev_flit_data <= truncateLSB (cap_data);
-            rg_prev_flit_ruser <= zeroExtend (cap_valid);
+            rg_prev_flit_ruser <= fn_truncate_or_ze (cap_valid);
 `endif
 `else
             // without HWCRYPTO_CHERI
@@ -513,25 +517,25 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                   && (getTop (cap_dest_pipe) >= zeroExtend (getAddr (cap_dest_pipe)) + fromInteger (dest_len))
                   && (getHardPerms (cap_dest_pipe).permitStore);
         all_ok = caps_ok;
-`else
+`else // !HWCRYPTO_CHERI_FAT
         final_check = rg_check_ctr == 2;
         let cap = rg_check_ctr == 0 ? rg_data_ptr
                 : rg_check_ctr == 1 ? rg_key_ptr
                 : rg_dest_ptr;
-        CapPipe cap_pipe = fromMem (cap);
+        CapPipe cap_pipe = cast (cap);
         let len = rg_check_ctr == 0 ? rg_data_len
                 : rg_check_ctr == 1 ? rg_key_len
                 : fromInteger (dest_len);
-        caps_ok = (getBase (cap) <= getAddr (cap))
-                  && (getTop (cap) >= zeroExtend (getAddr (cap)) + zeroExtend (len))
-                  && (rg_check_ctr == 2 ? getHardPerms (cap).permitStore
-                                        : getHardPerms (cap).permitLoad);
+        caps_ok = (getBase (cap_pipe) <= getAddr (cap_pipe))
+                  && (getTop (cap_pipe) >= zeroExtend (getAddr (cap_pipe)) + zeroExtend (len))
+                  && (rg_check_ctr == 2 ? getHardPerms (cap_pipe).permitStore
+                                        : getHardPerms (cap_pipe).permitLoad);
         all_ok = final_check && rg_check_ok && caps_ok;
         if (!final_check) begin
             rg_check_ctr <= rg_check_ctr + 1;
             rg_check_ok <= all_ok;
         end
-`endif
+`endif // HWCRYPTO_CHERI_FAT
 
         if (final_check) begin
             rg_cheri_err <= !all_ok;
@@ -540,13 +544,13 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
 `ifndef HWCRYPTO_CHERI_FAT
             rg_check_ctr <= 0;
             rg_check_ok <= True;
-`endif
+`endif // HWCRYPTO_CHERI_FAT
             if (all_ok) begin
                 snk.put (?);
             end
         end
     endrule
-`endif
+`endif // HWCRYPTO_CHERI
 
 
     interface axi_s = shim.slave;
