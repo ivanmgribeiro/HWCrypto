@@ -35,7 +35,12 @@ import CHERICC_Fat :: *;
 
 typedef Bit #(0) Token;
 typedef enum {
-    ERROR,
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+    CHERI_ERROR,
+`endif
+`endif
+    BUS_ERROR,
     OKAY
 } HWCrypto_Err deriving (Bits, FShow, Eq);
 typedef enum {

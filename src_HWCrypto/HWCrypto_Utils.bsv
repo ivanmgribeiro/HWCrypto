@@ -34,6 +34,7 @@ import BRAMCore :: *;
 import Vector :: *;
 import SourceSink :: *;
 import HWCrypto_Types :: *;
+import AXI4 :: *;
 
 interface BRAM_PORT_XOR #(type addr_t_, type data_t_);
     interface BRAM_PORT #(addr_t_, data_t_) bram;
@@ -273,5 +274,57 @@ function Bit #(n_) fn_truncate_or_ze (Bit #(p_) val);
     Bit #(TAdd #(n_, p_)) extended = zeroExtend (val);
     return truncate (extended);
 endfunction
+
+function AXI4_Master #(id_, addr_, data_,
+                       awuser_o_, wuser_, buser_,
+                       aruser_o_, ruser_) fn_extend_ar_aw_user_fields (AXI4_Master #(id_, addr_, data_,
+                                                                                     awuser_i_, wuser_, buser_,
+                                                                                     aruser_i_, ruser_) m,
+                                                                       Bit #(n_) val)
+   provisos ( Add #(n_, awuser_i_, awuser_o_)
+            , Add #(n_, aruser_i_, aruser_o_));
+   return interface AXI4_Master;
+      interface Source aw;
+         method drop = m.aw.drop;
+         method canPeek = m.aw.canPeek;
+         method peek;
+            let x = m.aw.peek;
+            return AXI4_AWFlit { awid:     x.awid
+                               , awaddr:   x.awaddr
+                               , awlen:    x.awlen
+                               , awsize:   x.awsize
+                               , awburst:  x.awburst
+                               , awlock:   x.awlock
+                               , awcache:  x.awcache
+                               , awprot:   x.awprot
+                               , awqos:    x.awqos
+                               , awregion: x.awregion
+                               , awuser:   {val, x.awuser}};
+         endmethod
+      endinterface
+      interface Source w = m.w;
+      interface Sink b = m.b;
+      interface Source ar;
+         method drop = m.ar.drop;
+         method canPeek = m.ar.canPeek;
+         method peek;
+            let x = m.ar.peek;
+            return AXI4_ARFlit { arid:     x.arid
+                               , araddr:   x.araddr
+                               , arlen:    x.arlen
+                               , arsize:   x.arsize
+                               , arburst:  x.arburst
+                               , arlock:   x.arlock
+                               , arcache:  x.arcache
+                               , arprot:   x.arprot
+                               , arqos:    x.arqos
+                               , arregion: x.arregion
+                               , aruser:   {val, x.aruser}};
+         endmethod
+      endinterface
+      interface Sink r = m.r;
+   endinterface;
+endfunction
+
 
 endpackage

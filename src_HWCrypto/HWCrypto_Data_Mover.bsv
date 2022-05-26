@@ -111,6 +111,12 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
                                         , Add#(d__, TMul#(bram_be_, 8), TMul#(m_data_, 2))
                                         , Div#(m_data_, 8, bram_be_)
                                         , Mul#(bram_be_, 8, m_data_)
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+                                        , Add #(1, k__, m_buser_)
+                                        , Add #(1, l__, m_ruser_)
+`endif
+`endif
                                         );
     Wire #(Bool) dw_cycle_counter_reset <- mkDWire (False);
     Reg #(Bit #(64)) rg_cycle_counter <- mkReg (0);
@@ -608,6 +614,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
             $display ("%m HWCrypto DataMover rl_handle_axi_err");
         end
         let signal_error = False;
+        let cheri_error = False;
         if (rg_state == WAIT_RRESP) begin
             if (rg_verbosity > 0) begin
                 $display ("    error on read response channel");
@@ -623,6 +630,11 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
                 end
                 rg_state <= IDLE;
                 signal_error = True;
+`ifdef HWCRYPT_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+                cheri_error = truncateLSB (ugshim_slave.r.peek.ruser) == 1'b1;
+`endif
+`endif
             end
         end else begin
             if (rg_verbosity > 0) begin
@@ -633,11 +645,28 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
             rg_state <= IDLE;
             ugshim_slave.b.drop;
             signal_error = True;
+`ifdef HWCRYPT_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+            cheri_error = truncateLSB (ugshim_slave.b.peek.buser) == 1'b1;
+`endif
+`endif
         end
 
         if (signal_error) begin
-            $display ("    signalling ERROR");
-            snk.put(ERROR);
+            $display ("    signalling ", fshow (
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+                                                cheri_error ? CHERI_ERROR :
+`endif
+`endif
+                                                                            BUS_ERROR));
+            snk.put(
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+                    cheri_error ? CHERI_ERROR :
+`endif
+`endif
+                                                BUS_ERROR);
         end
     endrule
 

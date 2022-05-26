@@ -45,6 +45,11 @@ import BRAMCore :: *;
 import FIFOF :: *;
 import Vector :: *;
 import Connectable :: *;
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+import AXI4_DMA_CHERI_Checker :: *;
+`endif
+`endif
 
 interface HWCrypto_IFC #( // master interface parameters
                           numeric type m_id_
@@ -82,6 +87,13 @@ module mkHWCrypto64_Synth (HWCrypto_IFC #(4, 64, 64, 0, 0, 0, 0, 0,
     return hwcrypto;
 endmodule
 
+(* synthesize *)
+module mkHWCrypto64C_Synth (HWCrypto_IFC #(4, 64, 64, 0, 1, 0, 0, 1,
+                                          6, 64, 64, 0, 1, 0, 0, 1));
+    let hwcrypto <- mkHWCrypto;
+    return hwcrypto;
+endmodule
+
 // TODO remove restriction for addr and data to be 64b
 module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
                   provisos ( Add #(0, 64, s_addr_)
@@ -99,7 +111,6 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
                            , Add#(i__, TMul#(TDiv#(m_data_, 8), 8), TMul#(m_data_, 2))
 
                            // TODO relax this?
-
                            , Add#(0, 64, m_data_)
                            , Add#(0, 64, m_addr_)
                            );
@@ -128,7 +139,35 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
 
 
 
-    HWCrypto_Data_Mover_IFC #(`MPARAMS, 32) data_mover <- mkHWCrypto_Data_Mover (bram.a, toSink (fifo_copy_end));
+    HWCrypto_Data_Mover_IFC #(m_id_, m_addr_, m_data_,
+                              m_awuser_, m_wuser_,
+                              // TODO find a cleaner way of doing this
+                              TAdd #(
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+                                     1
+`else
+                                     0
+`endif
+`else
+                                     0
+`endif
+
+                                      , m_buser_),
+                              m_aruser_,
+                              TAdd #(
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+                                     1
+`else
+                                     0
+`endif
+`else
+                                     0
+`endif
+                                      , m_ruser_),
+                              32)
+        data_mover <- mkHWCrypto_Data_Mover (bram.a, toSink (fifo_copy_end));
     HWCrypto_SHA256_IFC #(32) sha256 <- mkHWCrypto_SHA256 (bram.b, toSink (fifo_sha256_end));
     let hash_copy <- mkCopy_Hash_To_BRAM (sha256.hash_regs, bram.a, dw_run_hash_copy, toSink (fifo_hash_copy_end));
     HWCrypto_Controller_IFC #(m_addr_, 32, m_data_, 2) controller
@@ -190,10 +229,20 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
         end
     endrule
 
+    let data_mover_axi_m = data_mover.axi_m;
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+    HWCrypto_Ptr cur_cap = controller.cur_cap;
+    CHERI_Checker_IFC #(`MPARAMS) cheri_checker <- mkCHERI_Checker;
+    mkConnection ( cheri_checker.slave
+                 , fn_extend_ar_aw_user_fields (data_mover.axi_m, cur_cap));
+    data_mover_axi_m = cheri_checker.master;
+`endif
+`endif
 
     interface axi_s = reg_handler.axi_s;
 
-    interface axi_m = data_mover.axi_m;
+    interface axi_m = data_mover_axi_m;
 
     method Action set_verbosity (Bit #(4) new_verb);
         rg_verbosity <= new_verb;
@@ -201,6 +250,11 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
         data_mover.set_verbosity (new_verb);
         sha256.set_verbosity (new_verb);
         controller.set_verbosity (new_verb);
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+        cheri_checker.set_verbosity (new_verb);
+`endif
+`endif
     endmethod
 
     method Action reset;

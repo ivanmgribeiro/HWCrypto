@@ -137,12 +137,14 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
     Reg #(Bool) rg_read_ok <- mkReg (True);
 
 `ifdef HWCRYPTO_CHERI
+`ifdef HWCRYPTO_CHERI_INT_CHECK
     Reg #(Bool) rg_do_check <- mkReg (False);
     Reg #(Bool) rg_cheri_err <- mkReg (False);
 `ifndef HWCRYPTO_CHERI_FAT
     Reg #(Bit #(2)) rg_check_ctr <- mkReg (0);
     Reg #(Bool) rg_check_ok <- mkReg (True);
 `endif // !HWCRYPTO_CHERI_FAT
+`endif // HWCRYPTO_CHERI_INT_CHECK
 `endif // HWCRYPTO_CHERI
 
     rule rl_handle_write (shim.master.aw.canPeek
@@ -198,7 +200,9 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                 // only allow writes when we are not currently processing a request
                 if (snk.canPut
 `ifdef HWCRYPTO_CHERI
+`ifdef HWCRYPTO_CHERI_INT_CHECK
                                && !rg_do_check
+`endif
 `endif
                                               ) begin
                     if (rg_verbosity > 0) begin
@@ -239,15 +243,23 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                     else if (index == data_len_idx) rg_data_len <= wflit.wdata;
                     else if (index == key_len_idx)  rg_key_len  <= wflit.wdata;
                     else if (index == status_idx) begin
-                        if (rg_verbosity > 0) begin
-                            $display ("    Triggering next stage");
-                        end
+                        let trigger_next = True;
 `ifdef HWCRYPTO_CHERI
+`ifdef HWCRYPTO_CHERI_INT_CHECK
+                        if (rg_verbosity > 0) begin
+                            $display ("    Triggering internal CHERI check");
+                        end
                         rg_do_check <= True;
                         rg_cheri_err <= False;
-`else
-                        snk.put (?); // trigger next stage
+                        trigger_next = False;
 `endif
+`endif
+                        if (trigger_next) begin
+                            if (rg_verbosity > 0) begin
+                                $display ("    Triggering next stage");
+                            end
+                            snk.put (?); // trigger next stage
+                        end
                         if (src.canPeek) begin
                             src.drop;
                         end
@@ -444,9 +456,16 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                     end else if (index == key_len_idx) begin
                         data = rg_key_len;
                     end else if (index == status_idx) begin
-                        data = zeroExtend ({ pack (rg_cheri_err)
+`ifdef HWCRYPTO_CHERI_INT_CHECK
+                        let cheri_err = rg_cheri_err;
+                        let is_busy = !snk.canPut && !rg_do_check;
+`else
+                        let cheri_err = False;
+                        let is_busy = !snk.canPut;
+`endif
+                        data = zeroExtend ({ pack (cheri_err)
                                            , pack (src.canPeek && src.peek != OKAY)
-                                           , pack (!snk.canPut && !rg_do_check)});
+                                           , pack (is_busy)});
 
                     end
                 end
@@ -489,6 +508,7 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
     endrule
 
 `ifdef HWCRYPTO_CHERI
+`ifdef HWCRYPTO_CHERI_INT_CHECK
     rule rl_do_check (rg_do_check);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Reg Handler rl_do_check");
@@ -550,6 +570,7 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
             end
         end
     endrule
+`endif // HWCRYPTO_CHERI_INT_CHECK
 `endif // HWCRYPTO_CHERI
 
 

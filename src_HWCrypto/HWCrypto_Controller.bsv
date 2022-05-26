@@ -81,6 +81,13 @@ interface HWCrypto_Controller_IFC #( numeric type m_addr_
     (* always_ready *)
     method Bit #(TLog #(n_brams_)) bram_index;
 
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+    (* always_ready *)
+    method HWCrypto_Ptr cur_cap;
+`endif
+`endif
+
     method Bool run_hash_copy;
 
     method Action set_verbosity (Bit #(4) new_verb);
@@ -136,6 +143,13 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     Reg #(Bit #(64)) rg_hash_ptr <- mkRegU;
 
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+    // 0: data_ptr, 1: key_ptr, 2: dest_ptr
+    Reg #(Bit #(2)) rg_cap_sel <- mkRegU;
+`endif
+`endif
+
     function Bit #(TMul #(n_, 8)) fn_replicate_byte (Bit #(8) value)
         provisos (Add#(z__, 8, TMul#(n_, 8)));
         Bit #(TMul #(n_, 8)) res = 0;
@@ -177,6 +191,12 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         rg_chunks_done <= 0;
         rg_cycle_counter <= 0;
         rg_cycle_counter_incr <= True;
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+        // we're going to start fetching the key, so select the key pointer capability
+        rg_cap_sel <= 1;
+`endif
+`endif
     endrule
 
     rule rl_req_key_short (stack_state.pop_port.canPeek
@@ -379,6 +399,12 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                      , "  len_bottom_bits: ", fshow (len_bottom_bits)
                      , "  last_over_55: ", fshow (last_over_55));
         end
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+        // we're going to start fetching data, so select the data capability
+        rg_cap_sel <= 0;
+`endif
+`endif
     endrule
 
     // continue the inner hash by fetching data and hashing it
@@ -622,6 +648,13 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             stack_state.put_port[1].put (COPY_HASH);
             stack_state.put_port[0].put (WRITE_BACK);
         end
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+        // we've finished reading the data and are not hashing it, so select the
+        // destination capability to write back to memory
+        rg_cap_sel <= 2;
+`endif
+`endif
     endrule
 
     rule rl_write_back_to_mem (stack_state.pop_port.canPeek
@@ -693,7 +726,10 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         src_reg_trigger.drop;
         src_data_mover.drop;
         if (snk_reg_result.canPut) begin
-            snk_reg_result.put (ERROR);
+            snk_reg_result.put (src_data_mover.peek);
+            if (rg_verbosity > 0) begin
+                $display ("    sending error ", fshow (src_data_mover.peek), " to snk_reg_result");
+            end
         end else begin
             $display ("    ERROR: not able to push result to register handler");
         end
@@ -706,6 +742,14 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     method key_xor_ctrl = rw_key_xor_ctrl.wget;
     method bram_index = rg_bram_index;
     method run_hash_copy = dw_run_hash_copy;
+
+`ifdef HWCRYPTO_CHERI
+`ifndef HWCRYPTO_CHERI_INT_CHECK
+    method cur_cap = rg_cap_sel == 0 ? regs.data_ptr
+                   : rg_cap_sel == 1 ? regs.key_ptr
+                   : regs.dest_ptr;
+`endif
+`endif
 
     method Action set_verbosity (Bit #(4) new_verb);
         rg_verbosity <= new_verb;
