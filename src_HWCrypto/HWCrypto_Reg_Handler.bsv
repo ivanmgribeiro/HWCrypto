@@ -550,7 +550,7 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                   && (getTop (cap_pipe) >= zeroExtend (getAddr (cap_pipe)) + zeroExtend (len))
                   && (rg_check_ctr == 2 ? getHardPerms (cap_pipe).permitStore
                                         : getHardPerms (cap_pipe).permitLoad);
-        all_ok = final_check && rg_check_ok && caps_ok;
+        all_ok = rg_check_ok && caps_ok;
         if (!final_check) begin
             rg_check_ctr <= rg_check_ctr + 1;
             rg_check_ok <= all_ok;
