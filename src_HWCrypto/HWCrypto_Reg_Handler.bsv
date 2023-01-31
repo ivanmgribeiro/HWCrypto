@@ -78,6 +78,30 @@ endinterface
  *      received in the same cycle. the use of the rg_flits_handled register
  *      will not allow the rules to fire in the same cycle
  *
+ *  Registers:
+ *   *  This module has 6 registers that are modifiable via the AXI interface:
+ *       *  Data Pointer register
+ *           *  This is the location of the first byte of data to be processed
+ *       *  Key Pointer register
+ *           *  This is the location of the first byte of the key to be used
+ *       *  Destination Pointer register
+ *           *  This is the location of the first byte of the result to be written
+ *       *  Data Length register
+ *           *  This is the length in bytes of the data to be processed
+ *       *  Key Length register
+ *           *  This is the length in bytes of the key to be used
+ *       *  Status register
+ *           * This is the status and control register
+ *             Currently it has one field:
+ *              *  Status bit (Bit 0 / LSB)
+ *                 *  When read, indicates whether the entire engine is active (1) or idle (0)
+ *                 *  Writing a 1 to this field starts the engine's execution
+
+ *              *  Copy only (Bit 1)
+ *                 *  When idle, writing this controls whether the next operation will perform
+ *                    just a copy of the data (1) or whether it will also perform hashing
+
+ *
  *  Interface:
  *   +  If the Sink that is passed as an argument can be enqueued into,
  *      then the HWCrypto is idle. Otherwise it is not.
@@ -105,6 +129,7 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
     Integer dest_len = 32;
 
 `ifdef HWCRYPTO_CHERI
+    // Register word (=8byte) address offsets when CHERI is enabled
     let data_ptr_idx = 0;
     let key_ptr_idx = 2;
     let dest_ptr_idx = 4;
@@ -112,6 +137,7 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
     let key_len_idx = 7;
     let status_idx = 8;
 `else
+    // Register word (=8byte) address offsets when CHERI is disabled
     let data_ptr_idx = 0;
     let key_ptr_idx = 1;
     let dest_ptr_idx = 2;

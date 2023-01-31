@@ -93,6 +93,24 @@ interface HWCrypto_Controller_IFC #( numeric type m_addr_
     method Action set_verbosity (Bit #(4) new_verb);
 endinterface
 
+/*
+ * This module contains the finite state machine that controls the rest of the
+ * rest of the operations of the engine.
+ * It receives "_ready" signals from each of the other components as well as
+ * "Source" interfaces from them which are used for flow control
+ * The interface exposed to the outside has _req wires which contain the
+ * requests made by the controller to the various components.
+ *
+ * The FSM is implemented by having mutually exclusive rules that fire only in
+ * the appropriate state.
+ *
+ * The module makes use of a "multi-push stack" to track the sequence of states.
+ * This is a stack (LIFO) which allows multiple pushes in a cycle, allowing
+ * for function-call-like behaviour.
+ *
+ * Execution is triggered from outside by enqueueing into the src_reg_trigger
+ * Source
+ */
 module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                               , Sink #(HWCrypto_Err) snk_reg_result
                               , Bool data_mover_is_ready
