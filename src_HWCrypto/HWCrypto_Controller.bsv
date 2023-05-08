@@ -62,22 +62,7 @@ typedef enum {
     FINISH
 } State deriving (Bits, Eq, FShow);
 
-interface HWCrypto_Controller_IFC #( numeric type m_addr_
-                                   , numeric type bram_addr_sz_
-                                   , numeric type bram_data_sz_
-                                   , numeric type n_brams_);
-    (* always_ready *)
-    method Maybe #(Data_Mover_Req #(m_addr_, bram_addr_sz_)) data_mover_req;
-
-    (* always_ready *)
-    method Maybe #(SHA256_Req #(bram_addr_sz_)) sha256_req;
-
-    (* always_ready *)
-    method Maybe #(Tuple2 #(Bool, Bit #(TAdd #(bram_addr_sz_, TLog #(TDiv #(bram_data_sz_, 8)))))) key_pad_ctrl;
-
-    (* always_ready *)
-    method Maybe #(Bit #(bram_data_sz_)) key_xor_ctrl;
-
+interface HWCrypto_Controller_IFC #(numeric type n_brams_);
     (* always_ready *)
     method Bit #(TLog #(n_brams_)) bram_index;
 
@@ -88,18 +73,25 @@ interface HWCrypto_Controller_IFC #( numeric type m_addr_
 `endif
 `endif
 
-    method Bool run_hash_copy;
-
     method Action set_verbosity (Bit #(4) new_verb);
 endinterface
 
 /*
  * This module contains the finite state machine that controls the rest of the
  * rest of the operations of the engine.
- * It receives "_ready" signals from each of the other components as well as
- * "Source" interfaces from them which are used for flow control
- * The interface exposed to the outside has _req wires which contain the
- * requests made by the controller to the various components.
+ *
+ * It interfaces with the other components using "SourceSinkDiff"s.
+ * These contain Sources of requests and Sinks of responses.
+ * The direction of the requests and responses depends on the relationship
+ * between the controller and the other component; for example the controller
+ * receives requests from the register handler module and sends responses
+ * back to it, but sends requests to the data mover and receives responses from
+ * it.
+ *
+ * When only control flow is required (i.e. there is no actual request/response
+ * information) a Token is used as the request/response type
+ * A non-empty Source indicates a request needs to be serviced, and a non-full
+ * Sink indicates a response can be received
  *
  * The FSM is implemented by having mutually exclusive rules that fire only in
  * the appropriate state.
@@ -111,20 +103,26 @@ endinterface
  * Execution is triggered from outside by enqueueing into the src_reg_trigger
  * Source
  */
-module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
-                              , Sink #(HWCrypto_Err) snk_reg_result
-                              , Bool data_mover_is_ready
-                              , Source #(HWCrypto_Err) src_data_mover
-                              , Bool sha256_is_ready
-                              , Source #(Token) src_sha256
-                              , Bool hash_copy_is_ready
-                              , Source #(Token) src_hash_copy
+module mkHWCrypto_Controller #( SourceSinkDiff #(Token, HWCrypto_Err) ssd_regs
+
+                              , SourceSinkDiff #(HWCrypto_Err, Data_Mover_Req #(m_addr_, bram_addr_sz_)) ssd_data_mover
+
+                              , SourceSinkDiff #(Token, SHA256_Req #(bram_addr_sz_)) ssd_sha256
+
+                              , SourceSinkDiff #(Token, Token) ssd_hash_copy
+
+                              , Sink #(Tuple2 #(Bool, Bit #(key_pad_start_sz_))) snk_key_pad_ctrl
+
+                              , Sink #(Bit #(bram_data_sz_)) snk_key_xor_ctrl
+
                               , HWCrypto_Regs regs)
-                              (HWCrypto_Controller_IFC #(m_addr_, bram_addr_sz_, bram_data_sz_, n_brams_))
+                              (HWCrypto_Controller_IFC #(n_brams_))
                               provisos ( Add#(0, 64, m_addr_)
                                        , Add#(a__, TAdd#(bram_addr_sz_, TLog#(TDiv#(bram_data_sz_, 8))), 64)
                                        , Mul#(b__, 8, bram_data_sz_)
-                                       , Add#(c__, 8, TMul#(b__, 8)));
+                                       , Add#(c__, 8, TMul#(b__, 8))
+                                       , NumAlias #(key_pad_start_sz_, TAdd #(bram_addr_sz_, TLog #(TDiv #(bram_data_sz_, 8))))
+                                       );
 
     Multi_Push_Stack_IFC #(State, 3) stack_state <- mkMulti_Push_Stack (IDLE);
     rule rl_debug_stack_state;
@@ -143,12 +141,6 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     Reg #(Bit #(64)) rg_hash_chunk_ctr <- mkReg (0);
     Reg #(Bit #(TLog #(n_brams_))) rg_bram_index <- mkReg (0);
     Reg #(Bit #(TLog #(n_brams_))) rg_bram_index_next <- mkReg (0);
-
-    RWire #(Data_Mover_Req #(m_addr_, bram_addr_sz_)) rw_data_mover_req <- mkRWire;
-    RWire #(SHA256_Req #(bram_addr_sz_)) rw_sha256_req <- mkRWire;
-    RWire #(Tuple2 #(Bool, Bit #(TAdd #(bram_addr_sz_, TLog #(TDiv #(bram_data_sz_, 8)))))) rw_key_pad_ctrl <- mkRWire;
-    RWire #(Bit #(bram_data_sz_)) rw_key_xor_ctrl <- mkRWire;
-    Wire #(Bool) dw_run_hash_copy <- mkDWire (False);
 
     Reg #(Bit #(64)) rg_chunks_done <- mkRegU;
     Reg #(Bit #(64)) rg_data_chunks_read <- mkRegU;
@@ -183,7 +175,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_handle_reg_trigger (stack_state.pop_port.canPeek
                                 && stack_state.pop_port.peek == IDLE
-                                && src_reg_trigger.canPeek);
+                                && ssd_regs.source.canPeek);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_handle_reg_trigger");
         end
@@ -219,7 +211,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_req_key_short (stack_state.pop_port.canPeek
                            && stack_state.pop_port.peek == REQ_KEY_SHORT
-                           && data_mover_is_ready);
+                           && ssd_data_mover.sink.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_req_key_short");
         end
@@ -236,7 +228,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                              , bram_addr : 0
                              , dir       : BUS2BRAM
                              , len       : regs.key_len};
-        rw_data_mover_req.wset (dm_req);
+        ssd_data_mover.sink.put (dm_req);
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (WAIT_KEY_SHORT);
         if (rg_verbosity > 0) begin
@@ -247,35 +239,39 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_wait_key_short (stack_state.pop_port.canPeek
                             && stack_state.pop_port.peek == WAIT_KEY_SHORT
-                            && src_data_mover.canPeek
-                            && src_data_mover.peek == OKAY);
+                            && ssd_data_mover.source.canPeek
+                            && ssd_data_mover.source.peek == OKAY
+                            && snk_key_pad_ctrl.canPut
+                            && snk_key_xor_ctrl.canPut
+                            );
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_key_short");
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
         end
-        src_data_mover.drop;
+        ssd_data_mover.source.drop;
         // now need to prep key
         // skip this for now and get data + hash it
         // TODO might reuse this rule after hashing long keys
         if (regs.key_len < 64) begin
-            rw_key_pad_ctrl.wset (tuple2 (True, truncate (regs.key_len)));
+            snk_key_pad_ctrl.put (tuple2 (True, truncate (regs.key_len)));
         end else if (regs.key_len == 64) begin
-            rw_key_pad_ctrl.wset (tuple2 (False, ?));
+            snk_key_pad_ctrl.put (tuple2 (False, ?));
         end else begin
             // if the key was bigger than 64 bytes, then we will have hashed it
             // down to a 32 byte key
-            rw_key_pad_ctrl.wset (tuple2 (True, 32));
+            snk_key_pad_ctrl.put (tuple2 (True, 32));
         end
 
-        rw_key_xor_ctrl.wset (fn_replicate_byte ('h36));
+        snk_key_xor_ctrl.put (fn_replicate_byte ('h36));
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (START_INNER_HASH);
     endrule
 
     rule rl_req_key_long (stack_state.pop_port.canPeek
-                          && stack_state.pop_port.peek == REQ_KEY_LONG);
+                          && stack_state.pop_port.peek == REQ_KEY_LONG
+                          && snk_key_pad_ctrl.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_req_key_long");
         end
@@ -299,7 +295,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
             $display ( "    total_len: ", fshow (regs.key_len)
                      , "  len_bottom_bits: ", fshow (len_bottom_bits));
         end
-        rw_key_pad_ctrl.wset (tuple2 (False, ?));
+        snk_key_pad_ctrl.put (tuple2 (False, ?));
 
         stack_state.pop_port.drop;
         stack_state.put_port[2].put (CONTINUE_WITH_DATA);
@@ -308,7 +304,9 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     endrule
 
     rule rl_wait_req_key_long (stack_state.pop_port.canPeek
-                               && stack_state.pop_port.peek == WAIT_KEY_LONG);
+                               && stack_state.pop_port.peek == WAIT_KEY_LONG
+                               && snk_key_pad_ctrl.canPut
+                               && snk_key_xor_ctrl.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_req_key_long");
             $display ("    cycle count: ", fshow (rg_cycle_counter));
@@ -316,15 +314,15 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
         if (rg_verbosity > 1) begin
             stack_state.print_state;
         end
-        rw_key_pad_ctrl.wset (tuple2 (True, 32));
-        rw_key_xor_ctrl.wset (fn_replicate_byte ('h36));
+        snk_key_pad_ctrl.put (tuple2 (True, 32));
+        snk_key_xor_ctrl.put (fn_replicate_byte ('h36));
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (START_INNER_HASH);
     endrule
 
     rule rl_hash_key_req (stack_state.pop_port.canPeek
                           && stack_state.pop_port.peek == HASH_KEY_REQ
-                          && sha256_is_ready);
+                          && ssd_sha256.sink.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_hash_key_req");
             $display ("    cycle count: ", fshow (rg_cycle_counter));
@@ -340,7 +338,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                          // TODO change this
                          , pad_one    : True
                          , append_len : True};
-        rw_sha256_req.wset (sha_req);
+        ssd_sha256.sink.put (sha_req);
         if (rg_verbosity > 0) begin
             $display ("    sha_req: ", fshow (sha_req));
             $display ("    going to WAIT_HASH");
@@ -353,7 +351,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     // start the inner hash by hashing what is in the key bram
     rule rl_start_inner_hash (stack_state.pop_port.canPeek
                               && stack_state.pop_port.peek == START_INNER_HASH
-                              && sha256_is_ready);
+                              && ssd_sha256.sink.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_start_inner_hash");
             $display ("    cycle count: ", fshow (rg_cycle_counter));
@@ -367,7 +365,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                          , reset_hash : True
                          , pad_one    : False
                          , append_len : False};
-        rw_sha256_req.wset (sha_req);
+        ssd_sha256.sink.put (sha_req);
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (CONTINUE_INNER_HASH);
     endrule
@@ -375,14 +373,14 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     // set up for fetching data from memory to the data bram and hashing it
     rule rl_continue_inner_hash (stack_state.pop_port.canPeek
                                  && stack_state.pop_port.peek == CONTINUE_INNER_HASH
-                                 && src_sha256.canPeek);
+                                 && ssd_sha256.source.canPeek);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_continue_inner_hash");
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
         end
-        src_sha256.drop;
+        ssd_sha256.source.drop;
 
         rg_bram_index <= 1;
         stack_state.pop_port.drop;
@@ -428,7 +426,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     // continue the inner hash by fetching data and hashing it
     rule rl_continue_hash_with_data (stack_state.pop_port.canPeek
                                      && stack_state.pop_port.peek == CONTINUE_WITH_DATA
-                                     && data_mover_is_ready);
+                                     && ssd_data_mover.sink.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_continue_hash_with_data");
         end
@@ -469,7 +467,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                                      , bram_addr : 0
                                      , dir       : BUS2BRAM
                                      , len       : len};
-                rw_data_mover_req.wset (dm_req);
+                ssd_data_mover.sink.put (dm_req);
                 if (rg_verbosity > 0) begin
                     $display ("    dm_req: ", fshow (dm_req));
                     $display ("    going to WAIT_DATA");
@@ -491,23 +489,23 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_wait_read (stack_state.pop_port.canPeek
                        && stack_state.pop_port.peek == WAIT_READ
-                       && src_data_mover.canPeek
-                       && src_data_mover.peek == OKAY
-                       && sha256_is_ready);
+                       && ssd_data_mover.source.canPeek
+                       && ssd_data_mover.source.peek == OKAY
+                       && ssd_sha256.sink.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_read");
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
         end
-        src_data_mover.drop;
+        ssd_data_mover.source.drop;
         SHA256_Req #(bram_addr_sz_) sha_req
             = SHA256_Req { bram_addr  : 0
                          , len        : zeroExtend (rg_chunk_len)
                          , reset_hash : rg_chunk_is_first
                          , pad_one    : rg_chunk_pad_one
                          , append_len : rg_chunk_is_last};
-        rw_sha256_req.wset (sha_req);
+        ssd_sha256.sink.put (sha_req);
         if (rg_verbosity > 0) begin
             $display ("    sha_req: ", fshow (sha_req));
             $display ("    going to WAIT_HASH");
@@ -519,7 +517,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_req_hash (stack_state.pop_port.canPeek
                       && stack_state.pop_port.peek == REQ_HASH
-                      && sha256_is_ready);
+                      && ssd_sha256.sink.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_req_hash");
         end
@@ -532,7 +530,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                          , reset_hash : rg_chunk_is_first
                          , pad_one    : rg_chunk_pad_one
                          , append_len : rg_chunk_is_last};
-        rw_sha256_req.wset (sha_req);
+        ssd_sha256.sink.put (sha_req);
         if (rg_verbosity > 0) begin
             $display ("    sha_req: ", fshow (sha_req));
             $display ("    going to WAIT_HASH");
@@ -544,14 +542,14 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_wait_hash (stack_state.pop_port.canPeek
                        && stack_state.pop_port.peek == WAIT_HASH
-                       && src_sha256.canPeek);
+                       && ssd_sha256.source.canPeek);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_hash");
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
         end
-        src_sha256.drop;
+        ssd_sha256.source.drop;
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (CONTINUE_WITH_DATA);
         rg_chunks_done <= rg_chunks_done + 1;
@@ -559,15 +557,15 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_wait_data (stack_state.pop_port.canPeek
                        && stack_state.pop_port.peek == WAIT_DATA
-                       && src_data_mover.canPeek
-                       && src_data_mover.peek == OKAY);
+                       && ssd_data_mover.source.canPeek
+                       && ssd_data_mover.source.peek == OKAY);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_data");
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
         end
-        src_data_mover.drop;
+        ssd_data_mover.source.drop;
 
         SHA256_Req #(bram_addr_sz_) sha_req
             = SHA256_Req { bram_addr  : 0
@@ -575,7 +573,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                          , reset_hash : True
                          , pad_one    : True
                          , append_len : True};
-        rw_sha256_req.wset (sha_req);
+        ssd_sha256.sink.put (sha_req);
         if (rg_verbosity > 0) begin
             $display ("    sha_req: ", fshow (sha_req));
             $display ("    going to WAIT_HASH");
@@ -586,14 +584,14 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_copy_hash_to_data_bram (stack_state.pop_port.canPeek
                                     && stack_state.pop_port.peek == COPY_HASH
-                                    && hash_copy_is_ready);
+                                    && ssd_hash_copy.sink.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_copy_hash_to_data_bram");
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
         end
-        dw_run_hash_copy <= True;
+        ssd_hash_copy.sink.put (?);
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (WAIT_COPY_HASH);
     endrule
@@ -603,25 +601,26 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     Reg #(Bool) rg_data_hash_done <- mkRegU;
     rule rl_wait_copy_hash (stack_state.pop_port.canPeek
                             && stack_state.pop_port.peek == WAIT_COPY_HASH
-                            && src_hash_copy.canPeek);
+                            && ssd_hash_copy.source.canPeek
+                            && snk_key_xor_ctrl.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_copy_hash");
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
         end
-        src_hash_copy.drop;
+        ssd_hash_copy.source.drop;
         rg_bram_index <= rg_bram_index_next;
         rg_key_hash_req <= False;
         rg_key_hash_done <= False;
         rg_data_hash_done <= False;
-        rw_key_xor_ctrl.wset (fn_replicate_byte (rg_replicate_byte));
+        snk_key_xor_ctrl.put (fn_replicate_byte (rg_replicate_byte));
         stack_state.pop_port.drop;
     endrule
 
     rule rl_outer_hash (stack_state.pop_port.canPeek
                         && stack_state.pop_port.peek == OUTER_HASH
-                        && sha256_is_ready);
+                        );
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_outer_hash");
             $display ("    rg_key_hash_req: ", fshow (rg_key_hash_req));
@@ -641,14 +640,14 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                              , reset_hash : True
                              , pad_one    : False
                              , append_len : False};
-            rw_sha256_req.wset (sha_req);
-        end else if (rg_key_hash_req && !rg_key_hash_done && src_sha256.canPeek) begin
+            ssd_sha256.sink.put (sha_req);
+        end else if (rg_key_hash_req && !rg_key_hash_done && ssd_sha256.source.canPeek) begin
             $display ("    case 2");
             rg_bram_index <= 1;
             rg_key_hash_done <= True;
-        end else if (rg_key_hash_done && !rg_data_hash_done && src_sha256.canPeek) begin
+        end else if (rg_key_hash_done && !rg_data_hash_done && ssd_sha256.source.canPeek) begin
             $display ("    case 3");
-            src_sha256.drop;
+            ssd_sha256.source.drop;
             rg_data_hash_done <= True;
             SHA256_Req #(bram_addr_sz_) sha_req
                 = SHA256_Req { bram_addr  : 0
@@ -656,10 +655,10 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                              , reset_hash : False
                              , pad_one    : True
                              , append_len : True};
-            rw_sha256_req.wset (sha_req);
-        end else if (rg_key_hash_done && rg_data_hash_done && src_sha256.canPeek) begin
+            ssd_sha256.sink.put (sha_req);
+        end else if (rg_key_hash_done && rg_data_hash_done && ssd_sha256.source.canPeek) begin
             $display ("    case 4");
-            src_sha256.drop;
+            ssd_sha256.source.drop;
             rg_replicate_byte <= 0;
             rg_bram_index_next <= 1;
             stack_state.pop_port.drop;
@@ -677,7 +676,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
 
     rule rl_write_back_to_mem (stack_state.pop_port.canPeek
                                && stack_state.pop_port.peek == WRITE_BACK
-                               && data_mover_is_ready);
+                               && ssd_data_mover.sink.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_write_back_to_mem");
         end
@@ -694,59 +693,72 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
                              , bram_addr : 0
                              , dir       : BRAM2BUS
                              , len       : 32};
-        rw_data_mover_req.wset (dm_req);
+        ssd_data_mover.sink.put (dm_req);
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (WAIT_WRITE_BACK);
     endrule
 
     rule rl_wait_write_back (stack_state.pop_port.canPeek
                              && stack_state.pop_port.peek == WAIT_WRITE_BACK
-                             && src_data_mover.canPeek
-                             && src_data_mover.peek == OKAY);
+                             && ssd_data_mover.source.canPeek
+                             && ssd_data_mover.source.peek == OKAY);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_wait_write_back");
         end
         if (rg_verbosity > 1) begin
             stack_state.print_state;
         end
-        src_data_mover.drop;
+        ssd_data_mover.source.drop;
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (FINISH);
     endrule
 
+    // ASSERT: ssd_regs.source.canPeek MUST be true at this point since to get into this state we must
+    //         it must have been true before and only the finish/error states drop from it and these go back
+    //         to the idle state which waits for canPeek to be true
     rule rl_finish (stack_state.pop_port.canPeek
-                    && stack_state.pop_port.peek == FINISH);
+                    && stack_state.pop_port.peek == FINISH
+                    //&& ssd_regs.source.canPeek // redundant, see ASSERT above
+                    && ssd_regs.sink.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_finish");
             $display ("    cycles counted: ", fshow (rg_cycle_counter));
         end
-        src_reg_trigger.drop;
-        if (snk_reg_result.canPut) begin
-            snk_reg_result.put(OKAY);
-        end
+        ssd_regs.source.drop;
+        ssd_regs.sink.put(OKAY);
         stack_state.pop_port.drop;
         stack_state.put_port[0].put (IDLE);
     endrule
 
+    //rule rl_debug_dm (ssd_data_mover.source.canPeek);
+    //    $display("%m HWCrypto Controller rl_debug_dm");
+    //    $display("ssd_data_mover.source.peek: ", fshow(ssd_data_mover.source.peek));
+    //    stack_state.print_state;
+    //endrule
+    // ASSERT: ssd_regs.source.canPeek MUST be true at this point since to get into this state we must
+    //         it must have been true before and only the finish/error states drop from it and these go back
+    //         to the idle state which waits for canPeek to be true
     rule rl_handle_dm_err (stack_state.pop_port.canPeek
                            && (stack_state.pop_port.peek == WAIT_WRITE_BACK
                                || stack_state.pop_port.peek == WAIT_KEY_SHORT
                                || stack_state.pop_port.peek == WAIT_READ
                                || stack_state.pop_port.peek == WAIT_DATA)
-                           && src_data_mover.canPeek
-                           && src_data_mover.peek != OKAY);
+                           && ssd_data_mover.source.canPeek
+                           && ssd_data_mover.source.peek != OKAY
+                           // && ssd_regs.source.canPeek // redundant, see ASSERT above
+                           );
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto Controller rl_handle_dm_err");
         end
         // The datamover encountered a bus error; reset the state, write error
         // to registers and go to IDLE
         stack_state.reset;
-        src_reg_trigger.drop;
-        src_data_mover.drop;
-        if (snk_reg_result.canPut) begin
-            snk_reg_result.put (src_data_mover.peek);
+        ssd_regs.source.drop;
+        ssd_data_mover.source.drop;
+        if (ssd_regs.sink.canPut) begin
+            ssd_regs.sink.put (ssd_data_mover.source.peek);
             if (rg_verbosity > 0) begin
-                $display ("    sending error ", fshow (src_data_mover.peek), " to snk_reg_result");
+                $display ("    sending error ", fshow (ssd_data_mover.source.peek), " to ssd_regs.sink");
             end
         end else begin
             $display ("    ERROR: not able to push result to register handler");
@@ -754,12 +766,7 @@ module mkHWCrypto_Controller #( Source #(Token) src_reg_trigger
     endrule
 
 
-    method data_mover_req = rw_data_mover_req.wget;
-    method sha256_req = rw_sha256_req.wget;
-    method key_pad_ctrl = rw_key_pad_ctrl.wget;
-    method key_xor_ctrl = rw_key_xor_ctrl.wget;
     method bram_index = rg_bram_index;
-    method run_hash_copy = dw_run_hash_copy;
 
 `ifdef HWCRYPTO_CHERI
 `ifndef HWCRYPTO_CHERI_INT_CHECK

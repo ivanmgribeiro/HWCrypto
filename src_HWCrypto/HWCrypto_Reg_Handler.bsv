@@ -117,7 +117,7 @@ endinterface
  *   + we only use the bottom 7 bits of the address
  */
 // TODO remove restriction for addr and data to be 64b
-module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
+module mkHWCrypto_Reg_Handler #(SourceSinkDiff #(HWCrypto_Err, Token) ssd_in)
                                (HWCrypto_Reg_Handler_IFC #(`SPARAMS))
                                provisos ( Add #(0, 64, s_addr_)
                                         , Add #(0, 64, s_data_)
@@ -146,6 +146,15 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
     let status_idx = 5;
 `endif
 
+    let src = ssd_in.source;
+    let snk = ssd_in.sink;
+
+    // Keep track of whether tne engine is busy here
+    // The communication to other components allows for arbitrary lengths of
+    // FIFOs between components, so we can't use the state of the source and
+    // sink to determine whether we're busy, so keep track of it here
+    Reg #(Bool) rg_busy[2] <- mkCReg (2, False);
+
     Reg #(HWCrypto_Ptr) rg_data_ptr <- mkRegU;
     Reg #(HWCrypto_Ptr) rg_key_ptr  <- mkRegU;
     Reg #(HWCrypto_Ptr) rg_dest_ptr <- mkRegU;
@@ -173,9 +182,12 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
 `endif // HWCRYPTO_CHERI_INT_CHECK
 `endif // HWCRYPTO_CHERI
 
+    Reg #(HWCrypto_Err) rg_controller_err <- mkReg (OKAY);
+
     rule rl_handle_write (shim.master.aw.canPeek
                           && shim.master.w.canPeek
-                          && shim.master.b.canPut);
+                          && shim.master.b.canPut
+                          && snk.canPut);
         let awflit = shim.master.aw.peek;
         let wflit = shim.master.w.peek;
         if (rg_verbosity > 0) begin
@@ -224,10 +236,10 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                 end
 
                 // only allow writes when we are not currently processing a request
-                if (snk.canPut
+                if (!rg_busy[0]
 `ifdef HWCRYPTO_CHERI
 `ifdef HWCRYPTO_CHERI_INT_CHECK
-                               && !rg_do_check
+                                && !rg_do_check
 `endif
 `endif
                                               ) begin
@@ -285,9 +297,7 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                                 $display ("    Triggering next stage");
                             end
                             snk.put (?); // trigger next stage
-                        end
-                        if (src.canPeek) begin
-                            src.drop;
+                            rg_busy[0] <= True;
                         end
                     end
                 end else begin
@@ -484,13 +494,13 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                     end else if (index == status_idx) begin
 `ifdef HWCRYPTO_CHERI_INT_CHECK
                         let cheri_err = rg_cheri_err;
-                        let is_busy = !snk.canPut && !rg_do_check;
+                        let is_busy = rg_busy[0] && !rg_do_check;
 `else
                         let cheri_err = False;
-                        let is_busy = !snk.canPut;
+                        let is_busy = rg_busy[0];
 `endif
                         data = zeroExtend ({ pack (cheri_err)
-                                           , pack (src.canPeek && src.peek != OKAY)
+                                           , pack (rg_controller_err != OKAY)
                                            , pack (is_busy)});
 
                     end
@@ -502,8 +512,8 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
                 else if (index == dest_ptr_idx) data = rg_key_ptr;
                 else if (index == data_len_idx) data = rg_key_len;
                 else if (index == key_len_idx)  data = rg_dest_ptr;
-                else if (index == status_idx)   data = zeroExtend ({ pack (src.canPeek && src.peek != OKAY)
-                                                                   , pack (!snk.canPut)});
+                else if (index == status_idx)   data = zeroExtend ({ pack (rg_controller_err != OKAY)
+                                                                   , pack (rg_busy[0])});
 `endif
             end
         end else begin
@@ -593,11 +603,18 @@ module mkHWCrypto_Reg_Handler #(Sink #(Token) snk, Source #(HWCrypto_Err) src)
 `endif // HWCRYPTO_CHERI_FAT
             if (all_ok) begin
                 snk.put (?);
+                rg_busy[0] <= True;
             end
         end
     endrule
 `endif // HWCRYPTO_CHERI_INT_CHECK
 `endif // HWCRYPTO_CHERI
+
+    rule rl_handle_controller_response (src.canPeek);
+        rg_controller_err <= src.peek;
+        rg_busy[1] <= False;
+        src.drop;
+    endrule
 
 
     interface axi_s = shim.slave;

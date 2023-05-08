@@ -35,6 +35,7 @@ package HWCrypto_Data_Mover;
 import AXI :: *;
 import SourceSink :: *;
 import HWCrypto_Types :: *;
+import HWCrypto_Utils :: *;
 import BRAMCore :: *;
 
 typedef enum {
@@ -71,12 +72,8 @@ interface HWCrypto_Data_Mover_IFC #( // bus interface
                                    , numeric type m_buser_
                                    , numeric type m_aruser_
                                    , numeric type m_ruser_
-                                   // bram addr type
-                                   , numeric type bram_addr_sz_
                                    );
     interface AXI4_Master #(`MPARAMS) axi_m;
-    method Action request (Data_Mover_Req #(m_addr_, bram_addr_sz_) req);
-    method Bool is_ready;
     method Action set_verbosity (Bit #(4) new_verb);
 endinterface
 /* *  Behaviour: *   +  This module will transfer data between the AXI Bus and a BRAM-like
@@ -94,8 +91,9 @@ endinterface
  *  First, we need to align the address so we can fetch bigger things (AXI4
  *  means that our requests must always be size-aligned
  */
-module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_)) bram, Sink #(HWCrypto_Err) snk)
-                               (HWCrypto_Data_Mover_IFC #(`MPARAMS, bram_addr_sz_))
+module mkHWCrypto_Data_Mover #( BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_)) bram
+                              , SourceSinkDiff #(Data_Mover_Req #(m_addr_, bram_addr_sz_), HWCrypto_Err) ssd_in)
+                              (HWCrypto_Data_Mover_IFC #(`MPARAMS))
                                provisos ( Add#(a__, TLog#(TAdd#(1, TLog#(TDiv#(m_data_, 8)))), 3)
                                         , Add#(b__, 10, m_addr_)
                                         , Add#(c__, TLog#(TDiv#(m_data_, 8)), m_addr_)
@@ -354,7 +352,8 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
     rule rl_drop_bresp (rg_state == WAIT_BRESP
                         && ugshim_slave.b.canPeek
                         && ugshim_slave.b.peek.bresp != DECERR
-                        && ugshim_slave.b.peek.bresp != SLVERR);
+                        && ugshim_slave.b.peek.bresp != SLVERR
+                        && ssd_in.sink.canPut);
         if (rg_verbosity > 0) begin
             $display ("%m HWCrypto DataMover rl_drop_bresp");
             $display ("    flit: ", fshow (ugshim_slave.b.peek));
@@ -363,7 +362,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
         ugshim_slave.b.drop;
         if (rg_bytes_left == 0) begin
             rg_state <= IDLE;
-            snk.put (OKAY);
+            ssd_in.sink.put (OKAY);
             if (rg_verbosity > 0) begin
                 $display ("    going to state IDLE and returning OKAY");
             end
@@ -431,7 +430,8 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
                           && (ugshim_slave.r.canPeek
                               && ugshim_slave.r.peek.rresp != SLVERR
                               && ugshim_slave.r.peek.rresp != DECERR)
-                          && rg_dir == BUS2BRAM);
+                          && rg_dir == BUS2BRAM
+                          && ssd_in.sink.canPut);
         let rflit = ugshim_slave.r.peek;
         ugshim_slave.r.drop;
         let bytes_read = 1 << pack (rg_last_req_size);
@@ -535,7 +535,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
                     rg_state <= WRITE_LAST;
                 end else begin
                     rg_state <= IDLE;
-                    snk.put (OKAY);
+                    ssd_in.sink.put (OKAY);
                     $display ("    fetch finished; going to IDLE");
                     $display ("    cycle counter: ", fshow (rg_cycle_counter));
                 end
@@ -545,7 +545,8 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
         end
     endrule
 
-    rule rl_finish_write (rg_state == WRITE_LAST);
+    rule rl_finish_write (rg_state == WRITE_LAST
+                          && ssd_in.sink.canPut);
         Bit #(bram_addr_sz_) addr = truncate (rg_bram_addr_b >> 3);
         let data = rg_last_data;
         bram.put (True, addr, data);
@@ -554,7 +555,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
             $display ("    addr: ", fshow (addr), ", data: ", fshow (data));
         end
         rg_state <= IDLE;
-        snk.put (OKAY);
+        ssd_in.sink.put (OKAY);
     endrule
 
     // This rule assumes that the address in rg_bus_addr is bus-width-aligned
@@ -604,10 +605,14 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
 
     rule rl_handle_axi_err ((rg_state == WAIT_RRESP
                              && ugshim_slave.r.canPeek
+                             // only return an error in the sink on the last rflit, so if it's not the last flit
+                             // we can still proceed even if there's no space in the sink
+                             && (ssd_in.sink.canPut || !ugshim_slave.r.peek.rlast)
                              && (ugshim_slave.r.peek.rresp == DECERR
                                  || ugshim_slave.r.peek.rresp == SLVERR))
                             || (rg_state == WAIT_BRESP
                                 && ugshim_slave.b.canPeek
+                                && ssd_in.sink.canPut
                                 && (ugshim_slave.b.peek.bresp == DECERR
                                     || ugshim_slave.b.peek.bresp == SLVERR)));
         if (rg_verbosity > 0) begin
@@ -660,19 +665,22 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
 `endif
 `endif
                                                                             BUS_ERROR));
-            snk.put(
+            ssd_in.sink.put(
 `ifdef HWCRYPTO_CHERI
 `ifndef HWCRYPTO_CHERI_INT_CHECK
-                    cheri_error ? CHERI_ERROR :
+                            cheri_error ? CHERI_ERROR :
 `endif
 `endif
-                                                BUS_ERROR);
+                                                        BUS_ERROR);
         end
     endrule
 
 
-    method Action request (Data_Mover_Req #(m_addr_, bram_addr_sz_) req)
-                          if (rg_state == IDLE);
+    rule rl_handle_request (rg_state == IDLE
+                            && ssd_in.source.canPeek);
+        let req = ssd_in.source.peek;
+        ssd_in.source.drop;
+
         let bus_addr  = req.bus_addr;
         let len       = req.len;
         let bram_addr = req.bram_addr;
@@ -779,9 +787,7 @@ module mkHWCrypto_Data_Mover #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data
         rg_bytes_left <= len;
         rg_state <= dir == BUS2BRAM ? WAIT_RRESP : WRITE_BURST;
         dw_cycle_counter_reset <= True;
-    endmethod
-
-    method Bool is_ready = rg_state == IDLE;
+    endrule
 
     interface axi_m = shim.master;
 

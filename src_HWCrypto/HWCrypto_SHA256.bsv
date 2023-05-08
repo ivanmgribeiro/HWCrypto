@@ -45,17 +45,15 @@ typedef enum {
     FINISH
 } State deriving (Bits, Eq, FShow);
 
-interface HWCrypto_SHA256_IFC #(numeric type bram_addr_sz_);
-    method Action request (SHA256_Req #(bram_addr_sz_) req);
-    method Bool is_ready;
+interface HWCrypto_SHA256_IFC;
     method Vector #(8, Bit #(32)) hash_regs;
     method Action set_verbosity (Bit #(4) new_verb);
 endinterface
 
 // TODO variable number of rounds per cycle?
 module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_)) bram,
-                           Sink #(Token) snk)
-                          (HWCrypto_SHA256_IFC #(bram_addr_sz_))
+                           SourceSinkDiff #(SHA256_Req #(bram_addr_sz_), Token) ssd_in)
+                          (HWCrypto_SHA256_IFC)
                           provisos ( Add #(0, 64, bram_data_sz_)
                                    // This depends on the size of rg_rnd_ctr
                                    , Add#(a__, 16, TAdd#(bram_addr_sz_, 1))
@@ -361,7 +359,8 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
         end
     endrule
 
-    rule rl_finish (rg_state == FINISH);
+    rule rl_finish (rg_state == FINISH
+                    && ssd_in.sink.canPut);
         if (rg_verbosity > 0) begin
             $display ("HWCrypto SHA256 rl_finish");
             $display ("    cycle counter: ", fshow (rg_cycle_counter));
@@ -375,14 +374,18 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
             end
         end
         rg_state <= IDLE;
-        snk.put (?);
+        ssd_in.sink.put (?);
     endrule
 
 
     // TODO make length type more general
     // Assumes that the next 1536 bits of the BRAM are also clear (ie there are 512b of data and 2048b
     // of scratch space in total including data)
-    method Action request (SHA256_Req #(bram_addr_sz_) req) if (rg_state == IDLE);
+    rule rl_handle_request (rg_state == IDLE
+                            && ssd_in.source.canPeek);
+        let req = ssd_in.source.peek;
+        ssd_in.source.drop;
+
         let bram_addr  = req.bram_addr;
         let len        = req.len;
         let reset_hash = req.reset_hash;
@@ -410,11 +413,9 @@ module mkHWCrypto_SHA256 #(BRAM_PORT #(Bit #(bram_addr_sz_), Bit #(bram_data_sz_
         rg_pad_one <= pad_one;
         rg_state <= READ;
         dw_cycle_counter_reset <= True;
-    endmethod
+    endrule
 
     method hash_regs = readVReg (v_rg_hash);
-
-    method Bool is_ready = rg_state == IDLE;
 
     method Action set_verbosity (Bit #(4) new_verb);
         rg_verbosity <= new_verb;

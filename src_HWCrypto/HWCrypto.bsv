@@ -43,6 +43,7 @@ import HWCrypto_Utils :: *;
 import SourceSink :: *;
 import BRAMCore :: *;
 import FIFOF :: *;
+import SpecialFIFOs :: *;
 import Vector :: *;
 import Connectable :: *;
 `ifdef HWCRYPTO_CHERI
@@ -115,8 +116,6 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
                            , Add#(0, 64, m_addr_)
                            );
     Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
-    FIFOF #(Token) fifo_reg_trigger <- mkUGFIFOF1;
-    FIFOF #(HWCrypto_Err) fifo_reg_result <- mkUGFIFOF1;
     FIFOF #(HWCrypto_Err) fifo_copy_end    <- mkUGFIFOF1;
     FIFOF #(Token) fifo_sha256_end  <- mkUGFIFOF1;
     FIFOF #(Token) fifo_hash_copy_end <- mkUGFIFOF;
@@ -124,21 +123,35 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
     Reg #(Bool) rg_print_requested <- mkReg (False);
     Reg #(Bit #(32)) rg_bram_ctr <- mkReg (0);
 
-    let reg_handler <- mkHWCrypto_Reg_Handler (toSink (fifo_reg_trigger), toSource (fifo_reg_result));
+    let ff_ctrl_to_reg <- mkBypassFIFOF;
+    // this cannot be a bypass fifof because that would lead to a path from the register handler
+    // to the controller and back to the register handler
+    // TODO more explanation
+    let ff_reg_to_ctrl <- mkFIFOF;
+    let reg_handler <- mkHWCrypto_Reg_Handler (SourceSinkDiff { source: toSource (ff_ctrl_to_reg)
+                                                              , sink  : toSink   (ff_reg_to_ctrl)});
+
     // TODO change 512
     BRAM_DUAL_PORT #(Bit #(32), Bit #(m_data_)) key_bram <- mkBRAMCore2 (512, False);
     BRAM_DUAL_PORT #(Bit #(32), Bit #(m_data_)) data_bram <- mkBRAMCore2 (512, False);
-    BRAM_DP_XOR_IFC #(Bit #(32), Bit #(m_data_)) key_bram_xor <- mkBRAM_DP_XOR (key_bram);
+    let ff_ctrl_to_xor_ctrl <- mkBypassFIFOF;
+    let ff_ctrl_to_pad_ctrl <- mkBypassFIFOF;
+    BRAM_DUAL_PORT #(Bit #(32), Bit #(m_data_)) key_bram_xor <- mkBRAM_DP_XOR ( key_bram
+                                                                              , toSource (ff_ctrl_to_xor_ctrl)
+                                                                              , toSource (ff_ctrl_to_pad_ctrl)
+                                                                              );
+
     Wire #(Bit #(TLog #(2))) dw_bram_index <- mkDWire (0);
-    Wire #(Bool) dw_run_hash_copy <- mkDWire (False);
     Vector #(2, BRAM_DUAL_PORT #(Bit #(32), Bit #(m_data_))) v_brams = newVector;
-    v_brams[0] = key_bram_xor.bram;
+    v_brams[0] = key_bram_xor;
     v_brams[1] = data_bram;
 
     let bram <- mkHWCrypto_BRAM_DP_Mux (v_brams, dw_bram_index);
 
 
 
+    let ff_ctrl_to_data_mover <- mkBypassFIFOF;
+    let ff_data_mover_to_ctrl <- mkBypassFIFOF;
     HWCrypto_Data_Mover_IFC #(m_id_, m_addr_, m_data_,
                               m_awuser_, m_wuser_,
                               // TODO find a cleaner way of doing this
@@ -165,53 +178,49 @@ module mkHWCrypto (HWCrypto_IFC #(`MPARAMS, `SPARAMS))
 `else
                                      0
 `endif
-                                      , m_ruser_),
-                              32)
-        data_mover <- mkHWCrypto_Data_Mover (bram.a, toSink (fifo_copy_end));
-    HWCrypto_SHA256_IFC #(32) sha256 <- mkHWCrypto_SHA256 (bram.b, toSink (fifo_sha256_end));
-    let hash_copy <- mkCopy_Hash_To_BRAM (sha256.hash_regs, bram.a, dw_run_hash_copy, toSink (fifo_hash_copy_end));
-    HWCrypto_Controller_IFC #(m_addr_, 32, m_data_, 2) controller
-        <- mkHWCrypto_Controller ( toSource (fifo_reg_trigger)
-                                 , toSink (fifo_reg_result)
-                                 , data_mover.is_ready
-                                 , toSource (fifo_copy_end)
-                                 , sha256.is_ready
-                                 , toSource (fifo_sha256_end)
-                                 , hash_copy.is_ready
-                                 , toSource (fifo_hash_copy_end)
+                                      , m_ruser_)
+                              )
+        data_mover <- mkHWCrypto_Data_Mover ( bram.a
+                                            , SourceSinkDiff { source: toSource (ff_ctrl_to_data_mover)
+                                                             , sink  : toSink   (ff_data_mover_to_ctrl)
+                                                             }
+                                            );
+
+    let ff_ctrl_to_sha256 <- mkBypassFIFOF;
+    let ff_sha256_to_ctrl <- mkBypassFIFOF;
+    HWCrypto_SHA256_IFC sha256 <- mkHWCrypto_SHA256 ( bram.b
+                                                    , SourceSinkDiff { source: toSource (ff_ctrl_to_sha256)
+                                                                     , sink  : toSink   (ff_sha256_to_ctrl)
+                                                                     }
+                                                    );
+
+    let ff_ctrl_to_hash_copy <- mkBypassFIFOF;
+    let ff_hash_copy_to_ctrl <- mkBypassFIFOF;
+    let hash_copy <- mkCopy_Hash_To_BRAM ( sha256.hash_regs
+                                         , bram.a
+                                         , SourceSinkDiff { source: toSource (ff_ctrl_to_hash_copy)
+                                                          , sink  : toSink   (ff_hash_copy_to_ctrl)
+                                                          }
+                                         );
+
+    HWCrypto_Controller_IFC #(2) controller
+        <- mkHWCrypto_Controller ( SourceSinkDiff { source: toSource (ff_reg_to_ctrl)
+                                                  , sink  : toSink   (ff_ctrl_to_reg)}
+                                 , SourceSinkDiff { source: toSource (ff_data_mover_to_ctrl)
+                                                  , sink  : toSink   (ff_ctrl_to_data_mover)}
+                                 , SourceSinkDiff { source: toSource (ff_sha256_to_ctrl)
+                                                  , sink  : toSink   (ff_ctrl_to_sha256)}
+                                 , SourceSinkDiff { source: toSource (ff_hash_copy_to_ctrl)
+                                                  , sink  : toSink   (ff_ctrl_to_hash_copy)}
+                                 , toSink (ff_ctrl_to_pad_ctrl)
+                                 , toSink (ff_ctrl_to_xor_ctrl)
                                  , reg_handler.regs
                                  );
 
 
 
-    (* conflict_free="rl_forward_dm_req, hash_copy_rl_copy" *)
-    rule rl_forward_dm_req;
-        if (isValid (controller.data_mover_req)) begin
-            data_mover.request (controller.data_mover_req.Valid);
-        end
-    endrule
-
-    rule rl_forward_sha256_req;
-        if (isValid (controller.sha256_req)) begin
-            sha256.request (controller.sha256_req.Valid);
-        end
-    endrule
-
-    rule rl_forward_pad_ctrl (isValid (controller.key_pad_ctrl));
-        let ctrl = controller.key_pad_ctrl.Valid;
-        key_bram_xor.set_pad (tpl_1 (ctrl), tpl_2 (ctrl));
-    endrule
-
-    rule rl_forward_xor_ctrl (isValid (controller.key_xor_ctrl));
-        key_bram_xor.set_xor (controller.key_xor_ctrl.Valid);
-    endrule
-
     rule rl_forward_bram_index;
         dw_bram_index <= controller.bram_index;
-    endrule
-
-    rule rl_forward_run_hash_copy;
-        dw_run_hash_copy <= controller.run_hash_copy;
     endrule
 
     Reg #(Bool) rg_print_bram <- mkReg (False);
